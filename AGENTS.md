@@ -156,7 +156,7 @@ The slug is the tracker's identity: it picks the variables, the preset, and the 
 | Variable | Default | Notes |
 |---|---|---|
 | `TRAKT_ENABLED` | `false` | when false nothing else here is read or validated |
-| `TRAKT_CLIENT_ID` | — | **required when enabled**, sent as the `trakt-api-key` header |
+| `TRAKT_CLIENT_ID` | — | **required when enabled**, the trakt plugin's client id (see "Access token" below), sent as the `trakt-api-key` header |
 | `TRAKT_CLIENT_SECRET` | — | **required when enabled**, used to refresh the plugin's token |
 | `JELLYFIN_HOST` | — | **required when enabled**, the jellyfin holding the trakt plugin |
 | `JELLYFIN_API_KEY` | — | **required when enabled**, minted at Dashboard -> Advanced -> API Keys |

@@ -62,8 +62,8 @@ every new movie for download, exactly as if it had been typed into the form.
 
 ```sh
 TRAKT_ENABLED=true
-TRAKT_CLIENT_ID=…              # your trakt application's client id
-TRAKT_CLIENT_SECRET=…          # your trakt application's client secret
+TRAKT_CLIENT_ID=…              # the trakt plugin's own client id (see below)
+TRAKT_CLIENT_SECRET=…          # the trakt plugin's own client secret (see below)
 JELLYFIN_HOST=http://jellyfin:8096
 JELLYFIN_API_KEY=…             # Dashboard -> Advanced -> API Keys
 TRAKT_INTERVAL_MINUTES=15
@@ -205,8 +205,8 @@ the annotated list. The ones that matter most:
 | `AUTH_USER` / `AUTH_PASSWORD` | unset | enables basic auth when both are set |
 | `PUID` / `PGID` | `1000` | container user, must own the mounts |
 | `TRAKT_ENABLED` | `false` | poll a trakt.tv watchlist for movies |
-| `TRAKT_CLIENT_ID` | unset | trakt application client id, sent as `trakt-api-key` |
-| `TRAKT_CLIENT_SECRET` | unset | trakt application client secret, used to refresh the token |
+| `TRAKT_CLIENT_ID` | unset | the trakt plugin's client id (see above), sent as `trakt-api-key` |
+| `TRAKT_CLIENT_SECRET` | unset | the trakt plugin's client secret (see above), used to refresh the token |
 | `JELLYFIN_HOST` | unset | jellyfin holding the trakt plugin, e.g. `http://jellyfin:8096` |
 | `JELLYFIN_API_KEY` | unset | Dashboard -> Advanced -> API Keys |
 | `JELLYFIN_USER_ID` | unset | linked user to sync, by `LinkedMbUserId`; unset = first with a token |
