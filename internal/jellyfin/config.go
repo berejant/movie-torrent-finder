@@ -23,15 +23,58 @@ const (
 	fieldLinkedUser   = "LinkedMbUserId"
 )
 
+// usersKey is the one top-level field this service reads and writes.
+// Everything else in the document is held in TraktConfig.extra untouched.
+const usersKey = "TraktUsers"
+
 // TraktConfig is the trakt plugin's configuration document.
 //
 // The users are held as raw JSON rather than as a struct because a save is a
 // read-modify-write of a document another application owns: decoding into a
 // struct would drop every key this service does not know — Scrobble,
 // LocationsExcluded, whatever a later plugin version adds — and write them back
-// as absent, resetting the operator's settings.
+// as absent, resetting the operator's settings. The same guarantee applies one
+// level up: extra holds every top-level key besides TraktUsers, so a document
+// setting this service has never heard of survives a save too.
 type TraktConfig struct {
-	Users []map[string]json.RawMessage `json:"TraktUsers"`
+	Users []map[string]json.RawMessage
+
+	extra map[string]json.RawMessage
+}
+
+// UnmarshalJSON splits the document into the users this service acts on and
+// everything else, held untouched in extra.
+func (c *TraktConfig) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	if usersRaw, ok := raw[usersKey]; ok {
+		if err := json.Unmarshal(usersRaw, &c.Users); err != nil {
+			return fmt.Errorf("jellyfin: decode %s: %w", usersKey, err)
+		}
+		delete(raw, usersKey)
+	}
+	c.extra = raw
+	return nil
+}
+
+// MarshalJSON reassembles the document: extra byte-identical, TraktUsers
+// re-encoded from Users, which SetTokens may have edited in place.
+func (c *TraktConfig) MarshalJSON() ([]byte, error) {
+	out := make(map[string]json.RawMessage, len(c.extra)+1)
+	for key, value := range c.extra {
+		out[key] = value
+	}
+
+	users, err := json.Marshal(c.Users)
+	if err != nil {
+		return nil, fmt.Errorf("jellyfin: encode %s: %w", usersKey, err)
+	}
+	out[usersKey] = users
+
+	return json.Marshal(out)
 }
 
 // TraktUser is one linked media-server user's trakt account. It points into the

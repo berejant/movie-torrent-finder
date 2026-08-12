@@ -152,7 +152,7 @@ The slug is the tracker's identity: it picks the variables, the preset, and the 
 |---|---|---|
 | `DUPLICATE_CHECK_ENABLED` | `true` | set `false` to globally disable uniqueness checks |
 
-#### Trakt.tv watchlist (prefix `TRAKT_`)
+#### Trakt.tv watchlist (prefix `TRAKT_`) and Jellyfin (prefix `JELLYFIN_`)
 | Variable | Default | Notes |
 |---|---|---|
 | `TRAKT_ENABLED` | `false` | when false nothing else here is read or validated |
@@ -351,7 +351,7 @@ An optional background worker that turns a trakt.tv watchlist into requests. It 
 
 **Access token.** Read from the Emby/Jellyfin trakt plugin's own configuration, over the jellyfin API: `GET {JELLYFIN_HOST}/Plugins/4fe3201ed6ae4f2e8917e12bda571281/Configuration` with `Authorization: MediaBrowser Token="{JELLYFIN_API_KEY}"`. Nothing is cached — the configuration is re-read **before every sync**, so a refresh performed by the plugin is picked up without a restart. The account used is `JELLYFIN_USER_ID` matched against `LinkedMbUserId` (dashes and case ignored), or, when that is unset, the first entry carrying an access token — the document identifies media-server users, not trakt applications.
 
-A recorded `AccessTokenExpiration` that has passed, or is within an hour of passing, is refreshed here rather than left to trakt to reject: `POST {TRAKT_BASE_URL}/oauth/token` with `grant_type=refresh_token` and `TRAKT_CLIENT_ID`/`TRAKT_CLIENT_SECRET`, exactly as the plugin itself would. The new pair is written back with a `POST` to the same Configuration endpoint — the document is round-tripped as raw JSON, so the plugin's other settings survive untouched — and the recorded expiry is set to `now + expires_in * 3/4`, the same margin the plugin uses. If trakt rejects a token the plugin's copy claimed was still good, the sync refreshes once and retries the pass before giving up until the next tick. If jellyfin cannot store a refreshed pair, it is held in memory rather than lost, and the save is retried on the next sync.
+A recorded `AccessTokenExpiration` that has passed, or is within an hour of passing, is refreshed here rather than left to trakt to reject: `POST {TRAKT_BASE_URL}/oauth/token` with `grant_type=refresh_token` and `TRAKT_CLIENT_ID`/`TRAKT_CLIENT_SECRET`, exactly as the plugin itself would. The new pair is written back with a `POST` to the same Configuration endpoint — the document is round-tripped as raw JSON, so the plugin's other settings survive untouched — and the recorded expiry is set to `now + expires_in * 3/4`, the same margin the plugin uses. If trakt rejects a token the plugin's copy claimed was still good, the sync refreshes once and retries the pass before giving up until the next tick. If jellyfin cannot store a refreshed pair, it is held in memory rather than lost, and the save is retried on the next sync — but only in memory: if the process restarts before a retried save succeeds, that pair is gone and the only recovery is re-authorizing the plugin in Jellyfin.
 
 The `TRAKT_CLIENT_ID`/`TRAKT_CLIENT_SECRET` pair must be the one that issued the plugin's refresh token — for a stock install that is the plugin's own compiled-in pair (`Trakt/Api/TraktURIs.cs` in the plugin's source), not an operator's own trakt application, unless the plugin was re-authorized against one.
 

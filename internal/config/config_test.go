@@ -409,3 +409,25 @@ func TestLoadRejectsABadJellyfinHost(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadRejectsABadJellyfinTimeout(t *testing.T) {
+	for name, seconds := range map[string]string{"zero": "0", "negative": "-1"} {
+		t.Run(name, func(t *testing.T) {
+			baseEnv(t)
+			t.Setenv("TRACKERS", "toloka")
+			t.Setenv("TRACKER_TOLOKA_LOGIN", "tester")
+			t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
+			t.Setenv("TRAKT_ENABLED", "true")
+			t.Setenv("TRAKT_CLIENT_ID", "client-id")
+			t.Setenv("TRAKT_CLIENT_SECRET", "client-secret")
+			t.Setenv("JELLYFIN_HOST", "http://jellyfin:8096")
+			t.Setenv("JELLYFIN_API_KEY", "api-key")
+			t.Setenv("JELLYFIN_TIMEOUT_SECONDS", seconds)
+
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), "JELLYFIN_TIMEOUT_SECONDS") {
+				t.Fatalf("error = %v, want it to name JELLYFIN_TIMEOUT_SECONDS", err)
+			}
+		})
+	}
+}

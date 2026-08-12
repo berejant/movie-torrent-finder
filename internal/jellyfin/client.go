@@ -35,10 +35,11 @@ type Client struct {
 	baseURL string
 	apiKey  string
 	http    *http.Client
-	logger  *slog.Logger
 }
 
-// NewClient builds a client. It does not contact Jellyfin.
+// NewClient builds a client. It does not contact Jellyfin. logger is accepted
+// but currently unused; the parameter stays so a client that later needs to
+// log does not force every caller to change its call site.
 func NewClient(cfg config.Jellyfin, logger *slog.Logger) (*Client, error) {
 	base := strings.TrimRight(strings.TrimSpace(cfg.Host), "/")
 	if base == "" {
@@ -52,7 +53,6 @@ func NewClient(cfg config.Jellyfin, logger *slog.Logger) (*Client, error) {
 		baseURL: base,
 		apiKey:  strings.TrimSpace(cfg.APIKey),
 		http:    &http.Client{Timeout: cfg.Timeout()},
-		logger:  logger.With("component", "jellyfin"),
 	}, nil
 }
 

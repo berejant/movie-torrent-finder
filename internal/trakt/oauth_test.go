@@ -124,8 +124,18 @@ func TestOAuthRefreshRejection(t *testing.T) {
 			if err == nil {
 				t.Fatal("Refresh() succeeded, want an error")
 			}
-			if tc.wantIs != nil && !errors.Is(err, tc.wantIs) {
-				t.Fatalf("error = %v, want it to wrap %v", err, tc.wantIs)
+			if tc.wantIs != nil {
+				if !errors.Is(err, tc.wantIs) {
+					t.Fatalf("error = %v, want it to wrap %v", err, tc.wantIs)
+				}
+				return
+			}
+
+			// A non-4xx failure must never be classified as ErrUnauthorized: that
+			// would tell an operator to re-authorize the plugin during, say, a
+			// trakt outage rather than a bad grant.
+			if errors.Is(err, ErrUnauthorized) {
+				t.Fatalf("error = %v, want it not to wrap ErrUnauthorized", err)
 			}
 		})
 	}

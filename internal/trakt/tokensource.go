@@ -108,11 +108,23 @@ func (s *TokenSource) Refresh(ctx context.Context, rejected string) (string, err
 		// pending pair was issued, so ours wins outright over whatever the
 		// plugin wrote in the meantime. RefreshToken below now reads pending's
 		// refresh token too, in case the pair needs renewing again.
+		//
+		// Exception: if the operator re-linked trakt in jellyfin while a pair
+		// was held, the document's pair is a freshly authorized grant, not a
+		// stale one — and this overwrites it with the held pair regardless.
+		// That is rare enough, and self-corrects on the operator's next look
+		// at the plugin, that it is not worth detecting here.
 		user.SetTokens(s.pending.access, s.pending.refresh, s.pending.expiry)
 	}
 
 	// The same token coming back means nothing has changed, so the shortcut
 	// below would hand the caller the very token that was just refused.
+	//
+	// !expiry.IsZero() is deliberately asymmetric with Token: there, a zero
+	// expiry means "use it as found" because trakt is the authority. Here it
+	// must not short-circuit, or a token trakt just rejected — which is
+	// exactly what triggered this Refresh — would be handed straight back
+	// whenever the document's expiry cannot be read.
 	if expiry := user.Expiration(); user.AccessToken() != "" && user.AccessToken() != rejected &&
 		!expiry.IsZero() && time.Now().Add(refreshBuffer).Before(expiry) {
 		if s.pending == nil {
@@ -161,7 +173,9 @@ func (s *TokenSource) store(ctx context.Context, cfg *jellyfin.TraktConfig, acce
 	if err := s.jellyfin.SaveTraktConfig(ctx, cfg); err != nil {
 		s.pending = &pendingTokens{access: access, refresh: refresh, expiry: expiry}
 		s.logger.Error("refreshed the trakt access token but could not store it in jellyfin; "+
-			"holding it in memory and retrying on the next sync",
+			"holding it in memory and retrying on the next sync; "+
+			"if the process restarts before the save succeeds, this pair is lost and the "+
+			"trakt plugin must be re-authorized in jellyfin",
 			"err", err)
 		return err
 	}

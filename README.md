@@ -69,6 +69,10 @@ JELLYFIN_API_KEY=…             # Dashboard -> Advanced -> API Keys
 TRAKT_INTERVAL_MINUTES=15
 ```
 
+`http://jellyfin:8096` only resolves when Jellyfin shares a docker network with
+this service; with `network_mode: host` or a Jellyfin elsewhere on the LAN, use
+`http://127.0.0.1:8096` or the host's LAN address instead.
+
 It reads `GET /sync/watchlist/movies/listed_at/desc` with the headers trakt
 requires (`trakt-api-key`, `trakt-api-version: 2`, `Content-Type` and the bearer
 token) and turns each entry into a normal request — same queue, same ranking,
@@ -83,6 +87,11 @@ refreshes the token itself — using `TRAKT_CLIENT_SECRET`, the same credentials
 the plugin would use — and writes the new pair back to that same endpoint, so
 the plugin's own copy stays current too. Mint the API key at Jellyfin's
 **Dashboard → Advanced → API Keys → +**.
+
+**Upgrading an existing deployment.** `TRAKT_TOKEN_FILE` and the read-only
+`Trakt.xml` bind mount are gone — remove the mount, it is no longer read.
+`TRAKT_CLIENT_SECRET`, `JELLYFIN_HOST` and `JELLYFIN_API_KEY` are now required
+whenever `TRAKT_ENABLED=true`; the service refuses to start without them.
 
 **Each movie is scheduled once.** Processed movies are recorded by their trakt
 movie id, so removing a title from the watchlist and adding it back does not
@@ -207,7 +216,7 @@ the annotated list. The ones that matter most:
 | `TRAKT_ENABLED` | `false` | poll a trakt.tv watchlist for movies |
 | `TRAKT_CLIENT_ID` | unset | the trakt plugin's client id (see above), sent as `trakt-api-key` |
 | `TRAKT_CLIENT_SECRET` | unset | the trakt plugin's client secret (see above), used to refresh the token |
-| `JELLYFIN_HOST` | unset | jellyfin holding the trakt plugin, e.g. `http://jellyfin:8096` |
+| `JELLYFIN_HOST` | unset | jellyfin holding the trakt plugin, e.g. `http://jellyfin:8096` on a shared docker network, or `http://127.0.0.1:8096`/the LAN address otherwise |
 | `JELLYFIN_API_KEY` | unset | Dashboard -> Advanced -> API Keys |
 | `JELLYFIN_USER_ID` | unset | linked user to sync, by `LinkedMbUserId`; unset = first with a token |
 | `JELLYFIN_TIMEOUT_SECONDS` | `30` | per-request timeout for the jellyfin API |
@@ -258,9 +267,10 @@ owner. `/health/ready` reports this directly.
 **The trakt watchlist is not producing anything.** Every sync logs one line
 (`trakt watchlist synced`) with what it scanned and queued. `trakt rejected the
 credentials` after a refresh means the grant is gone — re-authorize the trakt
-plugin in Jellyfin. Jellyfin being unreachable or the API key being wrong is
-logged the same way and retried on the next interval, so the container keeps
-serving the UI either way.
+plugin in Jellyfin. A wrong `JELLYFIN_API_KEY` or an unreachable Jellyfin instead
+logs `trakt watchlist sync failed` carrying the underlying error (`jellyfin: api
+key rejected` for a bad key), and is retried on the next interval, so the
+container keeps serving the UI either way.
 
 **Login fails.** Check the credentials first; if they are right, the login form
 field names may have changed — they are overridable in

@@ -196,7 +196,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) (Summary, error) {
 		// disagreed: revoked, or an expiry that was simply wrong. A pass throws
 		// away partial results, so replaying the whole walk costs only the
 		// requests.
-		s.logger.Info("trakt rejected the access token; refreshing it and retrying the sync")
+		s.logger.Info("trakt rejected the access token; refreshing it and retrying the sync", "err", err)
 
 		if token, err = s.tokens.Refresh(ctx, token); err != nil {
 			return Summary{}, err

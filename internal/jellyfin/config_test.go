@@ -98,6 +98,33 @@ func TestSetTokensPreservesUnknownFields(t *testing.T) {
 	}
 }
 
+// The guarantee is not just per-user: a top-level key this service has never
+// heard of must survive a save too, or a future plugin setting would be
+// silently reset to its .NET default on every refresh.
+func TestSetTokensPreservesUnknownTopLevelFields(t *testing.T) {
+	const document = `{"TraktUsers":[{"AccessToken":"a"}],"SomeFutureSetting":{"a":1}}`
+
+	cfg := parseConfig(t, document)
+	user, err := cfg.User("")
+	if err != nil {
+		t.Fatalf("User() error: %v", err)
+	}
+	user.SetTokens("new-access", "new-refresh", time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC))
+
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatalf("unmarshal saved config: %v", err)
+	}
+	if string(got["SomeFutureSetting"]) != `{"a":1}` {
+		t.Errorf("saved SomeFutureSetting = %s, want byte-identical", got["SomeFutureSetting"])
+	}
+}
+
 func TestSetTokensRoundTripsThroughExpiration(t *testing.T) {
 	cfg := parseConfig(t, exampleConfig)
 	user, _ := cfg.User("")
