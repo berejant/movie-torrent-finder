@@ -157,7 +157,11 @@ The slug is the tracker's identity: it picks the variables, the preset, and the 
 |---|---|---|
 | `TRAKT_ENABLED` | `false` | when false nothing else here is read or validated |
 | `TRAKT_CLIENT_ID` | — | **required when enabled**, sent as the `trakt-api-key` header |
-| `TRAKT_TOKEN_FILE` | — | **required when enabled**, path to the `Trakt.xml` another application maintains |
+| `TRAKT_CLIENT_SECRET` | — | **required when enabled**, used to refresh the plugin's token |
+| `JELLYFIN_HOST` | — | **required when enabled**, the jellyfin holding the trakt plugin |
+| `JELLYFIN_API_KEY` | — | **required when enabled**, minted at Dashboard -> Advanced -> API Keys |
+| `JELLYFIN_USER_ID` | unset | linked user to sync, by `LinkedMbUserId`; unset = first with a token |
+| `JELLYFIN_TIMEOUT_SECONDS` | `30` | per-request timeout for the jellyfin API |
 | `TRAKT_BASE_URL` | `https://api.trakt.tv` | override only for a proxy or a test double |
 | `TRAKT_INTERVAL_MINUTES` | `15` | poll period; the first sync runs at startup |
 | `TRAKT_TIMEOUT_SECONDS` | `30` | per-request timeout |
@@ -343,9 +347,13 @@ An optional background worker that turns a trakt.tv watchlist into requests. It 
 - `GET {TRAKT_BASE_URL}/sync/watchlist/movies/listed_at/desc?page=<n>&limit=<TRAKT_PAGE_LIMIT>`
 - Headers on every call: `Content-Type: application/json`, `trakt-api-version: 2`, `trakt-api-key: <TRAKT_CLIENT_ID>`, `Authorization: Bearer <access token>`.
 - `X-Pagination-Page-Count` ends the walk; a short page is the fallback when the header is absent.
-- `401`/`403` is reported as a rejected credential and is **not** retried by this service — only the application that owns the token file can fix it. Everything else is logged and retried on the next interval.
+- `401`/`403` triggers one token refresh and retry of the pass (see "Access token" below); if it recurs after that, it is reported as a rejected credential and the pass gives up until the next tick — only re-authorizing the plugin in jellyfin can fix that. Everything else is logged and retried on the next interval.
 
-**Access token.** Read from `TRAKT_TOKEN_FILE`, an XML file another application owns and refreshes (the Emby/Jellyfin trakt plugin's `Trakt.xml`; see `Trakt.xml.example`). The token is loaded **before every sync**, never cached at startup, so a refresh is picked up without a restart. The first `<TraktUser>` carrying an `<AccessToken>` wins — the file identifies media-server users, not trakt applications. A recorded `<AccessTokenExpiration>` in the past is a warning, not a refusal: trakt is the authority on whether a token works. This service never writes the file.
+**Access token.** Read from the Emby/Jellyfin trakt plugin's own configuration, over the jellyfin API: `GET {JELLYFIN_HOST}/Plugins/4fe3201ed6ae4f2e8917e12bda571281/Configuration` with `Authorization: MediaBrowser Token="{JELLYFIN_API_KEY}"`. Nothing is cached — the configuration is re-read **before every sync**, so a refresh performed by the plugin is picked up without a restart. The account used is `JELLYFIN_USER_ID` matched against `LinkedMbUserId` (dashes and case ignored), or, when that is unset, the first entry carrying an access token — the document identifies media-server users, not trakt applications.
+
+A recorded `AccessTokenExpiration` that has passed, or is within an hour of passing, is refreshed here rather than left to trakt to reject: `POST {TRAKT_BASE_URL}/oauth/token` with `grant_type=refresh_token` and `TRAKT_CLIENT_ID`/`TRAKT_CLIENT_SECRET`, exactly as the plugin itself would. The new pair is written back with a `POST` to the same Configuration endpoint — the document is round-tripped as raw JSON, so the plugin's other settings survive untouched — and the recorded expiry is set to `now + expires_in * 3/4`, the same margin the plugin uses. If trakt rejects a token the plugin's copy claimed was still good, the sync refreshes once and retries the pass before giving up until the next tick. If jellyfin cannot store a refreshed pair, it is held in memory rather than lost, and the save is retried on the next sync.
+
+The `TRAKT_CLIENT_ID`/`TRAKT_CLIENT_SECRET` pair must be the one that issued the plugin's refresh token — for a stock install that is the plugin's own compiled-in pair (`Trakt/Api/TraktURIs.cs` in the plugin's source), not an operator's own trakt application, unless the plugin was re-authorized against one.
 
 **Scheduling.** Every entry becomes a normal request: `RawTitle` is `Title (Year)`, the query is `Title Year` (or just `Title` when `TRAKT_QUERY_WITH_YEAR=false`), and the normalized query drives the usual duplicate check. Entries are queued oldest-addition-first.
 
