@@ -84,13 +84,14 @@ func (s *TokenSource) Token(ctx context.Context) (string, error) {
 			"expires_at", expiry)
 	}
 
-	return s.Refresh(ctx)
+	return s.Refresh(ctx, user.AccessToken())
 }
 
 // Refresh exchanges the plugin's refresh token for a new access token and
 // stores the result back. Call it when trakt rejects a token Token believed was
-// still good.
-func (s *TokenSource) Refresh(ctx context.Context) (string, error) {
+// still good; rejected is that token, so a re-read still holding it is not
+// mistaken for a renewal.
+func (s *TokenSource) Refresh(ctx context.Context, rejected string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -110,8 +111,10 @@ func (s *TokenSource) Refresh(ctx context.Context) (string, error) {
 		user.SetTokens(s.pending.access, s.pending.refresh, s.pending.expiry)
 	}
 
-	if expiry := user.Expiration(); user.AccessToken() != "" && !expiry.IsZero() &&
-		time.Now().Add(refreshBuffer).Before(expiry) {
+	// The same token coming back means nothing has changed, so the shortcut
+	// below would hand the caller the very token that was just refused.
+	if expiry := user.Expiration(); user.AccessToken() != "" && user.AccessToken() != rejected &&
+		!expiry.IsZero() && time.Now().Add(refreshBuffer).Before(expiry) {
 		if s.pending == nil {
 			s.logger.Info("the trakt access token was already refreshed by the plugin; using it",
 				"expires_at", expiry)

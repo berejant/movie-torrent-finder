@@ -237,7 +237,10 @@ func TestRefreshUsesATokenThePluginAlreadyRenewed(t *testing.T) {
 	jelly := newFakeJellyfin(t, document(rfc3339(time.Now().Add(30*24*time.Hour))))
 	oauth := newFakeOAuth(t)
 
-	token, err := newTokenSource(t, jelly, oauth, "").Refresh(context.Background())
+	// "old-access" stands for the token the caller had before: different from
+	// what the document now holds, which is what "the plugin already renewed
+	// it" means.
+	token, err := newTokenSource(t, jelly, oauth, "").Refresh(context.Background(), "old-access")
 	if err != nil {
 		t.Fatalf("Refresh() error: %v", err)
 	}
@@ -250,13 +253,32 @@ func TestRefreshUsesATokenThePluginAlreadyRenewed(t *testing.T) {
 	}
 }
 
+// The document can still hold the very token trakt just rejected — the plugin
+// has not caught up, not renewed anything. The same token coming back must not
+// short-circuit the refresh trakt actually needs.
+func TestRefreshRefreshesWhenTheDocumentStillHoldsTheRejectedToken(t *testing.T) {
+	jelly := newFakeJellyfin(t, document(rfc3339(time.Now().Add(30*24*time.Hour))))
+	oauth := newFakeOAuth(t)
+
+	token, err := newTokenSource(t, jelly, oauth, "").Refresh(context.Background(), "stored-access")
+	if err != nil {
+		t.Fatalf("Refresh() error: %v", err)
+	}
+	if token != "fresh-access" {
+		t.Errorf("Refresh() = %q, want fresh-access", token)
+	}
+	if oauth.calls != 1 {
+		t.Errorf("refreshed %d times, want 1", oauth.calls)
+	}
+}
+
 // A jellyfin that will not take the new token has not made it a bad token.
 func TestRefreshReturnsTheTokenWhenTheSaveFails(t *testing.T) {
 	jelly := newFakeJellyfin(t, document(rfc3339(time.Now().Add(-time.Minute))))
 	jelly.saveStatus = http.StatusInternalServerError
 	oauth := newFakeOAuth(t)
 
-	token, err := newTokenSource(t, jelly, oauth, "").Refresh(context.Background())
+	token, err := newTokenSource(t, jelly, oauth, "").Refresh(context.Background(), "stored-access")
 	if err != nil {
 		t.Fatalf("Refresh() error: %v", err)
 	}
@@ -287,7 +309,7 @@ func TestRefreshRecoversTheHeldPairOnTheNextCall(t *testing.T) {
 
 	source := newTokenSource(t, jelly, oauth, "")
 
-	token, err := source.Refresh(context.Background())
+	token, err := source.Refresh(context.Background(), "stored-access")
 	if err != nil {
 		t.Fatalf("first Refresh() error: %v", err)
 	}
@@ -297,7 +319,10 @@ func TestRefreshRecoversTheHeldPairOnTheNextCall(t *testing.T) {
 
 	jelly.saveStatus = 0
 
-	token, err = source.Refresh(context.Background())
+	// The document still shows the old, unsaved pair — the same one already
+	// rejected — so this call must still recover the held pair rather than
+	// mistake the stale document for a renewal.
+	token, err = source.Refresh(context.Background(), "stored-access")
 	if err != nil {
 		t.Fatalf("second Refresh() error: %v", err)
 	}
@@ -327,7 +352,7 @@ func TestRefreshWithoutARefreshToken(t *testing.T) {
 	jelly := newFakeJellyfin(t, `{"TraktUsers":[{"AccessToken":"stored-access","AccessTokenExpiration":"2020-01-01T00:00:00Z"}]}`)
 	oauth := newFakeOAuth(t)
 
-	_, err := newTokenSource(t, jelly, oauth, "").Refresh(context.Background())
+	_, err := newTokenSource(t, jelly, oauth, "").Refresh(context.Background(), "stored-access")
 	if err == nil {
 		t.Fatal("Refresh() succeeded with no refresh token, want an error")
 	}

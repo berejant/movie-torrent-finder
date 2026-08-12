@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/berejant/movie-torrent-finder/internal/config"
+	"github.com/berejant/movie-torrent-finder/internal/jellyfin"
 	"github.com/berejant/movie-torrent-finder/internal/storage"
 	"github.com/berejant/movie-torrent-finder/internal/tracker"
 	"github.com/berejant/movie-torrent-finder/internal/trakt"
@@ -80,7 +81,16 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		syncer = trakt.NewSyncer(store, client, cfg, pool, logger)
+
+		// The token lives in the jellyfin trakt plugin's configuration, which
+		// this service reads over the API and writes back to when it refreshes.
+		media, err := jellyfin.NewClient(cfg.Jellyfin, logger)
+		if err != nil {
+			return err
+		}
+		tokens := trakt.NewTokenSource(media, trakt.NewOAuth(cfg.Trakt), cfg.Jellyfin.UserID, logger)
+
+		syncer = trakt.NewSyncer(store, client, tokens, cfg, pool, logger)
 		syncer.Start(ctx)
 	} else {
 		logger.Info("trakt watchlist sync disabled: TRAKT_ENABLED is not set")

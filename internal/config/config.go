@@ -78,11 +78,6 @@ type Trakt struct {
 	// plugin's own compiled-in pair.
 	ClientSecret string `env:"CLIENT_SECRET"`
 
-	// TokenFile is the Trakt.xml written by the Emby/Jellyfin trakt plugin.
-	// Another application owns it: the access token is read from it on every
-	// run rather than cached, so a refresh there is picked up here.
-	TokenFile string `env:"TOKEN_FILE"`
-
 	BaseURL string `env:"BASE_URL" envDefault:"https://api.trakt.tv"`
 
 	// IntervalMinutes is how often the watchlist is polled. The first sync runs
@@ -498,9 +493,6 @@ func (c Config) Validate() error {
 		if c.Jellyfin.TimeoutSeconds < 1 {
 			problems = append(problems, fmt.Sprintf("JELLYFIN_TIMEOUT_SECONDS must be >= 1, got %d", c.Jellyfin.TimeoutSeconds))
 		}
-		if strings.TrimSpace(c.Trakt.TokenFile) == "" {
-			problems = append(problems, "TRAKT_TOKEN_FILE must be set when TRAKT_ENABLED is true")
-		}
 
 		base, err := url.Parse(strings.TrimRight(c.Trakt.BaseURL, "/"))
 		switch {
@@ -620,7 +612,6 @@ func (c Config) LogValue() slog.Value {
 			slog.Bool("enabled", c.Trakt.Enabled),
 			slog.String("client_id", redact(c.Trakt.ClientID)),
 			slog.String("client_secret", redact(c.Trakt.ClientSecret)),
-			slog.String("token_file", c.Trakt.TokenFile),
 			slog.String("base_url", c.Trakt.BaseURL),
 			slog.Int("interval_minutes", c.Trakt.IntervalMinutes),
 			slog.Int("timeout_seconds", c.Trakt.TimeoutSeconds),

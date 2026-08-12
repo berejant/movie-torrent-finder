@@ -2,6 +2,8 @@ package trakt
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/berejant/movie-torrent-finder/internal/config"
 	"github.com/berejant/movie-torrent-finder/internal/storage"
@@ -19,8 +22,23 @@ type countingNotifier struct{ calls int }
 
 func (n *countingNotifier) Notify() { n.calls++ }
 
-// newSyncer wires a syncer onto a real SQLite store and a fake trakt.
+// newSyncer wires a syncer onto a real SQLite store, a fake trakt and a fake
+// jellyfin holding an unexpired token accepted by the fake trakt.
 func newSyncer(t *testing.T, fake *fakeTrakt, tweak func(*config.Config)) (*Syncer, *storage.Store, *countingNotifier) {
+	t.Helper()
+
+	// The fake trakt only accepts testToken, so that is what jellyfin holds.
+	document := fmt.Sprintf(
+		`{"TraktUsers":[{"AccessToken":%q,"RefreshToken":"stored-refresh","AccessTokenExpiration":%q}]}`,
+		testToken, rfc3339(time.Now().Add(30*24*time.Hour)))
+
+	return newSyncerWithTokens(t, fake, document, newFakeOAuth(t), tweak)
+}
+
+// newSyncerWithTokens is newSyncer's wiring, parameterized over the jellyfin
+// document and oauth fake so a test can set up a rejected token or a specific
+// issued one without restating the store/client/syncer plumbing.
+func newSyncerWithTokens(t *testing.T, fake *fakeTrakt, document string, oauth *fakeOAuth, tweak func(*config.Config)) (*Syncer, *storage.Store, *countingNotifier) {
 	t.Helper()
 
 	store, err := storage.Open(filepath.Join(t.TempDir(), "app.db"))
@@ -30,7 +48,6 @@ func newSyncer(t *testing.T, fake *fakeTrakt, tweak func(*config.Config)) (*Sync
 	t.Cleanup(func() { _ = store.Close() })
 
 	cfg := config.Config{DuplicateCheckEnabled: true, Trakt: testConfig(fake.URL)}
-	cfg.Trakt.TokenFile = writeTokenFile(t, exampleFile)
 	if tweak != nil {
 		tweak(&cfg)
 	}
@@ -40,8 +57,11 @@ func newSyncer(t *testing.T, fake *fakeTrakt, tweak func(*config.Config)) (*Sync
 		t.Fatalf("NewClient() error: %v", err)
 	}
 
+	jelly := newFakeJellyfin(t, document)
+	tokens := newTokenSource(t, jelly, oauth, "")
+
 	notifier := &countingNotifier{}
-	return NewSyncer(store, client, cfg, notifier, testLogger()), store, notifier
+	return NewSyncer(store, client, tokens, cfg, notifier, testLogger()), store, notifier
 }
 
 func queries(t *testing.T, store *storage.Store) []string {
@@ -498,4 +518,58 @@ func equalInts(got, want []int) bool {
 		}
 	}
 	return true
+}
+
+// An expiry the plugin recorded can be wrong — a revoked token, a clock that
+// moved. One refresh and one retry: a pass discards partial results, so
+// replaying the whole walk costs only the requests.
+func TestSyncRefreshesAndRetriesOnceOnRejection(t *testing.T) {
+	fake := newFakeTrakt(t, [][]WatchlistItem{{
+		movie(396109, "Extraction", 2020, "2026-08-04T13:38:29Z"),
+	}})
+
+	// Jellyfin holds a token the fake trakt rejects, but claims it is good for
+	// another month; only a refresh produces the token trakt accepts.
+	document := fmt.Sprintf(
+		`{"TraktUsers":[{"AccessToken":"revoked","RefreshToken":"stored-refresh","AccessTokenExpiration":%q}]}`,
+		rfc3339(time.Now().Add(30*24*time.Hour)))
+	oauth := newFakeOAuth(t)
+	oauth.body = fmt.Sprintf(
+		`{"access_token":%q,"refresh_token":"fresh-refresh","expires_in":7776000}`, testToken)
+
+	syncer, _, _ := newSyncerWithTokens(t, fake, document, oauth, nil)
+
+	summary, err := syncer.SyncOnce(context.Background())
+	if err != nil {
+		t.Fatalf("SyncOnce() error: %v", err)
+	}
+	if summary.Queued != 1 {
+		t.Errorf("summary = %+v, want 1 queued", summary)
+	}
+	if oauth.calls != 1 {
+		t.Errorf("refreshed %d times, want 1", oauth.calls)
+	}
+}
+
+// A second rejection is not a refresh loop: one retry, then the run fails and
+// the next tick tries again.
+func TestSyncGivesUpAfterASecondRejection(t *testing.T) {
+	fake := newFakeTrakt(t, [][]WatchlistItem{{
+		movie(396109, "Extraction", 2020, "2026-08-04T13:38:29Z"),
+	}})
+
+	document := fmt.Sprintf(
+		`{"TraktUsers":[{"AccessToken":"revoked","RefreshToken":"stored-refresh","AccessTokenExpiration":%q}]}`,
+		rfc3339(time.Now().Add(30*24*time.Hour)))
+	oauth := newFakeOAuth(t) // issues "fresh-access", which the fake trakt also rejects
+
+	syncer, _, _ := newSyncerWithTokens(t, fake, document, oauth, nil)
+
+	_, err := syncer.SyncOnce(context.Background())
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("error = %v, want ErrUnauthorized", err)
+	}
+	if oauth.calls != 1 {
+		t.Errorf("refreshed %d times, want exactly 1", oauth.calls)
+	}
 }

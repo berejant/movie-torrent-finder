@@ -22,9 +22,9 @@ import (
 	"github.com/berejant/movie-torrent-finder/internal/config"
 )
 
-// ErrUnauthorized means trakt rejected the access token or the client id. It is
-// not retryable by this service: the application that owns Trakt.xml has to
-// refresh the token first.
+// ErrUnauthorized means trakt rejected the access token or the client id. The
+// syncer answers it by refreshing the token once; a second one means the grant
+// is gone and the trakt plugin has to be re-authorized in jellyfin.
 var ErrUnauthorized = errors.New("trakt: credentials rejected")
 
 // apiVersion is the value of the required trakt-api-version header.
