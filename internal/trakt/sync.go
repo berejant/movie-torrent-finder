@@ -28,16 +28,17 @@ type Notifier interface {
 
 // Syncer polls the watchlist on an interval and queues what is new.
 //
-// It owns no state of its own: the access token is re-read from disk and the
-// cursor re-read from the database on every pass, so a restart, a token refresh
-// by the owning application, or a missed interval all resolve themselves on the
-// next run.
+// It owns no state of its own: the access token is re-read from the jellyfin
+// trakt plugin and the cursor re-read from the database on every pass, so a
+// restart, a token refresh by the owning application, or a missed interval all
+// resolve themselves on the next run.
 type Syncer struct {
 	cfg             config.Trakt
 	checkDuplicates bool
 
 	store    Store
 	client   *Client
+	tokens   *TokenSource
 	notifier Notifier
 	health   *healthcheck.Pinger
 	logger   *slog.Logger
@@ -50,20 +51,21 @@ type Syncer struct {
 }
 
 // failuresBeforeAlert is how many runs in a row must fail before the monitor is
-// told the sync is down. A single failure is unremarkable — the token file may
-// be mid-rewrite, trakt may be briefly unreachable — and the next run an hour
-// and a quarter later is a better answer than an alert. Five in a row is not a
-// blip: at the default interval it means the watchlist has been unread for over
-// an hour.
+// told the sync is down. A single failure is unremarkable — jellyfin may be
+// restarting, trakt may be briefly unreachable — and the next run an hour and a
+// quarter later is a better answer than an alert. Five in a row is not a blip:
+// at the default interval it means the watchlist has been unread for over an
+// hour.
 const failuresBeforeAlert = 5
 
 // NewSyncer builds the syncer. Call Start to run it.
-func NewSyncer(store Store, client *Client, cfg config.Config, notifier Notifier, logger *slog.Logger) *Syncer {
+func NewSyncer(store Store, client *Client, tokens *TokenSource, cfg config.Config, notifier Notifier, logger *slog.Logger) *Syncer {
 	return &Syncer{
 		cfg:             cfg.Trakt,
 		checkDuplicates: cfg.DuplicateCheckEnabled,
 		store:           store,
 		client:          client,
+		tokens:          tokens,
 		notifier:        notifier,
 		health:          healthcheck.New(cfg.Trakt.HealthcheckBaseURL, cfg.Trakt.HealthcheckUUID, logger),
 		logger:          logger.With("component", "trakt"),
@@ -76,7 +78,6 @@ func (s *Syncer) Start(ctx context.Context) {
 	go s.run(ctx)
 	s.logger.Info("trakt watchlist sync started",
 		"interval", s.cfg.Interval(),
-		"token_file", s.cfg.TokenFile,
 		"healthcheck", s.health.Enabled(),
 	)
 }
@@ -108,8 +109,8 @@ func (s *Syncer) run(ctx context.Context) {
 }
 
 // syncAndLog runs one pass, reports it, and signals the healthcheck monitor. A
-// failure is never fatal: the token file may not have been written yet, or
-// trakt may be down, and the next tick is a perfectly good retry.
+// failure is never fatal: jellyfin may not be reachable yet, or trakt may be
+// down, and the next tick is a perfectly good retry.
 func (s *Syncer) syncAndLog(ctx context.Context) {
 	summary, err := s.SyncOnce(ctx)
 
@@ -121,8 +122,8 @@ func (s *Syncer) syncAndLog(ctx context.Context) {
 
 	if err != nil {
 		if errors.Is(err, ErrUnauthorized) {
-			s.logger.Error("trakt rejected the access token; waiting for the token file to be refreshed",
-				"token_file", s.cfg.TokenFile, "err", err)
+			s.logger.Error("trakt rejected the credentials and refreshing did not help; "+
+				"re-authorize the trakt plugin in jellyfin", "err", err)
 		} else {
 			s.logger.Error("trakt watchlist sync failed", "err", err)
 		}
@@ -179,15 +180,9 @@ type Summary struct {
 // SyncOnce runs a single pass: read the token, walk the watchlist newest first
 // down to the last entry already processed, and queue what is left.
 func (s *Syncer) SyncOnce(ctx context.Context) (Summary, error) {
-	token, err := LoadToken(s.cfg.TokenFile)
+	token, err := s.tokens.Token(ctx)
 	if err != nil {
 		return Summary{}, err
-	}
-	if token.Expired(time.Now()) {
-		// Sent anyway: the expiry in the file is a copy of what the owning
-		// application last knew, and trakt is the authority on it.
-		s.logger.Warn("trakt access token is past its recorded expiry",
-			"expired_at", token.ExpiresAt, "token_file", s.cfg.TokenFile)
 	}
 
 	cursor, err := s.store.TraktCursor(ctx)
@@ -195,7 +190,19 @@ func (s *Syncer) SyncOnce(ctx context.Context) (Summary, error) {
 		return Summary{}, err
 	}
 
-	items, summary, err := s.collect(ctx, token.AccessToken, cursor)
+	items, summary, err := s.collect(ctx, token, cursor)
+	if errors.Is(err, ErrUnauthorized) {
+		// The plugin's recorded expiry said the token was good and trakt
+		// disagreed: revoked, or an expiry that was simply wrong. A pass throws
+		// away partial results, so replaying the whole walk costs only the
+		// requests.
+		s.logger.Info("trakt rejected the access token; refreshing it and retrying the sync", "err", err)
+
+		if token, err = s.tokens.Refresh(ctx, token); err != nil {
+			return Summary{}, err
+		}
+		items, summary, err = s.collect(ctx, token, cursor)
+	}
 	if err != nil {
 		return Summary{}, err
 	}
