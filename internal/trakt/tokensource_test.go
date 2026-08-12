@@ -263,6 +263,64 @@ func TestRefreshReturnsTheTokenWhenTheSaveFails(t *testing.T) {
 	if token != "fresh-access" {
 		t.Errorf("Refresh() = %q, want fresh-access", token)
 	}
+	if jelly.saves != 1 {
+		t.Errorf("saved %d times, want 1", jelly.saves)
+	}
+
+	// The save failed, so the document must still show the old pair. Without
+	// this the test cannot tell "save failed and we carried on" from "save
+	// worked".
+	stored := jelly.user(t)
+	if got := string(stored["AccessToken"]); got != `"stored-access"` {
+		t.Errorf("stored AccessToken = %s, want the document unchanged", got)
+	}
+}
+
+// A save failure must not cost the grant: trakt already retired the refresh
+// token the moment the fresh pair was issued, so spending it a second time
+// would fail. The fresh pair is held in memory and stored, not re-requested,
+// once jellyfin recovers.
+func TestRefreshRecoversTheHeldPairOnTheNextCall(t *testing.T) {
+	jelly := newFakeJellyfin(t, document(rfc3339(time.Now().Add(-time.Minute))))
+	jelly.saveStatus = http.StatusInternalServerError
+	oauth := newFakeOAuth(t)
+
+	source := newTokenSource(t, jelly, oauth, "")
+
+	token, err := source.Refresh(context.Background())
+	if err != nil {
+		t.Fatalf("first Refresh() error: %v", err)
+	}
+	if token != "fresh-access" {
+		t.Errorf("first Refresh() = %q, want fresh-access", token)
+	}
+
+	jelly.saveStatus = 0
+
+	token, err = source.Refresh(context.Background())
+	if err != nil {
+		t.Fatalf("second Refresh() error: %v", err)
+	}
+	if token != "fresh-access" {
+		t.Errorf("second Refresh() = %q, want fresh-access", token)
+	}
+
+	// The held pair was stored, not a second grant spent against a refresh
+	// token trakt had already retired.
+	if oauth.calls != 1 {
+		t.Errorf("refreshed %d times, want 1", oauth.calls)
+	}
+
+	stored := jelly.user(t)
+	if got := string(stored["AccessToken"]); got != `"fresh-access"` {
+		t.Errorf("stored AccessToken = %s", got)
+	}
+	if got := string(stored["RefreshToken"]); got != `"fresh-refresh"` {
+		t.Errorf("stored RefreshToken = %s", got)
+	}
+	if got := string(stored["LocationsExcluded"]); got != `["/mnt/private"]` {
+		t.Errorf("stored LocationsExcluded = %s, want the original value", got)
+	}
 }
 
 func TestRefreshWithoutARefreshToken(t *testing.T) {

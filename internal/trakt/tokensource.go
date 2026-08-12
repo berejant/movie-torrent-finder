@@ -15,6 +15,16 @@ import (
 // and fail somewhere in the middle.
 const refreshBuffer = time.Hour
 
+// pendingTokens is a pair that was refreshed but could not be stored in
+// jellyfin. Trakt retired the refresh token jellyfin still holds the moment
+// this pair was issued, so this pair — not the document's — is the live one,
+// and every later refresh has to start from it.
+type pendingTokens struct {
+	access  string
+	refresh string
+	expiry  time.Time
+}
+
 // TokenSource supplies the trakt access token the syncer sends.
 //
 // The token lives in the Emby/Jellyfin trakt plugin's configuration, which both
@@ -27,10 +37,15 @@ type TokenSource struct {
 	userID   string
 	logger   *slog.Logger
 
-	// mu serialises refreshes. Trakt invalidates a refresh token the moment it
-	// is spent, so two refreshes in flight would leave one of them holding a
-	// pair that no longer works.
+	// mu serialises refreshes and guards pending. Trakt invalidates a refresh
+	// token the moment it is spent, so two refreshes in flight would leave one
+	// of them holding a pair that no longer works.
 	mu sync.Mutex
+
+	// pending holds a pair that was refreshed but not yet stored, so a Jellyfin
+	// outage does not cost the grant: the next Refresh writes it into the
+	// document it re-reads instead of asking trakt for a new one.
+	pending *pendingTokens
 }
 
 // NewTokenSource builds the source. userID is the LinkedMbUserId to use, empty
@@ -86,11 +101,30 @@ func (s *TokenSource) Refresh(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	if s.pending != nil {
+		// The document's pair is known-dead: trakt retired it the moment the
+		// pending pair was issued, so ours wins outright over whatever the
+		// plugin wrote in the meantime. RefreshToken below now reads pending's
+		// refresh token too, in case the pair needs renewing again.
+		user.SetTokens(s.pending.access, s.pending.refresh, s.pending.expiry)
+	}
+
 	if expiry := user.Expiration(); user.AccessToken() != "" && !expiry.IsZero() &&
 		time.Now().Add(refreshBuffer).Before(expiry) {
-		s.logger.Info("the trakt access token was already refreshed by the plugin; using it",
-			"expires_at", expiry)
-		return user.AccessToken(), nil
+		if s.pending == nil {
+			s.logger.Info("the trakt access token was already refreshed by the plugin; using it",
+				"expires_at", expiry)
+			return user.AccessToken(), nil
+		}
+
+		// Trakt already issued this pair; it only ever needed storing.
+		access := user.AccessToken()
+		if err := s.store(ctx, cfg, access, user.RefreshToken(), expiry); err != nil {
+			return access, nil
+		}
+		s.logger.Info("stored a previously-held trakt access token in jellyfin", "expires_at", expiry)
+		return access, nil
 	}
 
 	refreshToken := user.RefreshToken()
@@ -103,22 +137,34 @@ func (s *TokenSource) Refresh(ctx context.Context) (string, error) {
 		return "", err
 	}
 
+	now := time.Now()
+	expiry := issued.Expiry(now)
 	// user points into cfg, so this edits the document that is about to be sent.
-	user.SetTokens(issued.Token, issued.RefreshToken, issued.Expiry(time.Now()))
+	user.SetTokens(issued.Token, issued.RefreshToken, expiry)
 
-	if err := s.jellyfin.SaveTraktConfig(ctx, cfg); err != nil {
-		// The token works; storing it did not. Using it for this sync beats
-		// failing — but trakt has already retired the refresh token that
-		// jellyfin still holds, so the next refresh will fail until the plugin
-		// is re-authorized. That is worth saying out loud.
-		s.logger.Error("refreshed the trakt access token but could not store it in jellyfin; "+
-			"the refresh token jellyfin holds is now spent and the plugin will need re-authorizing",
-			"err", err)
+	if err := s.store(ctx, cfg, issued.Token, issued.RefreshToken, expiry); err != nil {
 		return issued.Token, nil
 	}
-
-	s.logger.Info("refreshed the trakt access token", "expires_at", issued.Expiry(time.Now()))
+	s.logger.Info("refreshed the trakt access token", "expires_at", expiry)
 	return issued.Token, nil
+}
+
+// store saves cfg, which already carries access/refresh/expiry via user. On
+// failure the pair is held in s.pending rather than discarded: trakt has
+// already retired whatever refresh token jellyfin held before this pair was
+// written, so this pair, not the document's, is the one every later Refresh
+// must start from.
+func (s *TokenSource) store(ctx context.Context, cfg *jellyfin.TraktConfig, access, refresh string, expiry time.Time) error {
+	if err := s.jellyfin.SaveTraktConfig(ctx, cfg); err != nil {
+		s.pending = &pendingTokens{access: access, refresh: refresh, expiry: expiry}
+		s.logger.Error("refreshed the trakt access token but could not store it in jellyfin; "+
+			"holding it in memory and retrying on the next sync",
+			"err", err)
+		return err
+	}
+
+	s.pending = nil
+	return nil
 }
 
 // load reads the plugin configuration and picks the account to use. The user
