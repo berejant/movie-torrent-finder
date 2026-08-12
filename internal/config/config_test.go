@@ -217,8 +217,11 @@ func TestLoadTraktEnabled(t *testing.T) {
 	t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
 	t.Setenv("TRAKT_ENABLED", "true")
 	t.Setenv("TRAKT_CLIENT_ID", "client-id")
+	t.Setenv("TRAKT_CLIENT_SECRET", "client-secret")
 	t.Setenv("TRAKT_TOKEN_FILE", "/config/Trakt.xml")
 	t.Setenv("TRAKT_INTERVAL_MINUTES", "5")
+	t.Setenv("JELLYFIN_HOST", "http://jellyfin:8096")
+	t.Setenv("JELLYFIN_API_KEY", "api-key")
 
 	cfg, err := Load()
 	if err != nil {
@@ -266,7 +269,10 @@ func TestLoadRejectsABadHealthcheckUUID(t *testing.T) {
 	t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
 	t.Setenv("TRAKT_ENABLED", "true")
 	t.Setenv("TRAKT_CLIENT_ID", "client-id")
+	t.Setenv("TRAKT_CLIENT_SECRET", "client-secret")
 	t.Setenv("TRAKT_TOKEN_FILE", "/config/Trakt.xml")
+	t.Setenv("JELLYFIN_HOST", "http://jellyfin:8096")
+	t.Setenv("JELLYFIN_API_KEY", "api-key")
 
 	t.Run("full ping url", func(t *testing.T) {
 		t.Setenv("TRAKT_HEALTHCHECK_UUID", "https://hc-ping.com/c38a1b6c-0607-4e4c-8bbf-fc2d50e1f0e1")
@@ -301,4 +307,110 @@ func TestLoadRejectsABadHealthcheckUUID(t *testing.T) {
 			t.Errorf("HealthcheckUUID = %q, want empty", cfg.Trakt.HealthcheckUUID)
 		}
 	})
+}
+
+func TestLoadJellyfinDefaults(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("TRACKERS", "toloka")
+	t.Setenv("TRACKER_TOLOKA_LOGIN", "tester")
+	t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	// Nothing about jellyfin is required while the sync is off.
+	if got := cfg.Jellyfin.Timeout(); got != 30*time.Second {
+		t.Errorf("Jellyfin.Timeout() = %v, want 30s", got)
+	}
+}
+
+func TestLoadJellyfinEnabled(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("TRACKERS", "toloka")
+	t.Setenv("TRACKER_TOLOKA_LOGIN", "tester")
+	t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
+	t.Setenv("TRAKT_ENABLED", "true")
+	t.Setenv("TRAKT_CLIENT_ID", "client-id")
+	t.Setenv("TRAKT_CLIENT_SECRET", "client-secret")
+	t.Setenv("TRAKT_TOKEN_FILE", "/config/Trakt.xml")
+	t.Setenv("JELLYFIN_HOST", "http://jellyfin:8096")
+	t.Setenv("JELLYFIN_API_KEY", "api-key")
+	t.Setenv("JELLYFIN_USER_ID", "c38a1b6c06074e4c8bbffc2d50e1f0e1")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.Trakt.ClientSecret != "client-secret" {
+		t.Errorf("Trakt.ClientSecret = %q, want client-secret", cfg.Trakt.ClientSecret)
+	}
+	if cfg.Jellyfin.Host != "http://jellyfin:8096" || cfg.Jellyfin.APIKey != "api-key" {
+		t.Errorf("Jellyfin = %+v, want the host and api key bound", cfg.Jellyfin)
+	}
+	if cfg.Jellyfin.UserID != "c38a1b6c06074e4c8bbffc2d50e1f0e1" {
+		t.Errorf("Jellyfin.UserID = %q, want the linked user id bound", cfg.Jellyfin.UserID)
+	}
+}
+
+// Each variable the sync needs is named on its own, so a half-finished
+// configuration says which half is missing.
+func TestLoadRejectsIncompleteJellyfin(t *testing.T) {
+	// name of the variable left unset -> the text the error must contain
+	tests := map[string]string{
+		"TRAKT_CLIENT_SECRET": "TRAKT_CLIENT_SECRET",
+		"JELLYFIN_HOST":       "JELLYFIN_HOST",
+		"JELLYFIN_API_KEY":    "JELLYFIN_API_KEY",
+	}
+
+	for unset, want := range tests {
+		t.Run("without "+unset, func(t *testing.T) {
+			baseEnv(t)
+			t.Setenv("TRACKERS", "toloka")
+			t.Setenv("TRACKER_TOLOKA_LOGIN", "tester")
+			t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
+			t.Setenv("TRAKT_ENABLED", "true")
+			t.Setenv("TRAKT_CLIENT_ID", "client-id")
+			t.Setenv("TRAKT_CLIENT_SECRET", "client-secret")
+			t.Setenv("TRAKT_TOKEN_FILE", "/config/Trakt.xml")
+			t.Setenv("JELLYFIN_HOST", "http://jellyfin:8096")
+			t.Setenv("JELLYFIN_API_KEY", "api-key")
+			t.Setenv(unset, "")
+
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want it to name %s", err, want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsABadJellyfinHost(t *testing.T) {
+	tests := map[string]string{
+		"no scheme": "jellyfin:8096/x",
+		"ftp":       "ftp://jellyfin:8096",
+		"no host":   "http://",
+	}
+
+	for name, host := range tests {
+		t.Run(name, func(t *testing.T) {
+			baseEnv(t)
+			t.Setenv("TRACKERS", "toloka")
+			t.Setenv("TRACKER_TOLOKA_LOGIN", "tester")
+			t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
+			t.Setenv("TRAKT_ENABLED", "true")
+			t.Setenv("TRAKT_CLIENT_ID", "client-id")
+			t.Setenv("TRAKT_CLIENT_SECRET", "client-secret")
+			t.Setenv("TRAKT_TOKEN_FILE", "/config/Trakt.xml")
+			t.Setenv("JELLYFIN_API_KEY", "api-key")
+			t.Setenv("JELLYFIN_HOST", host)
+
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), "JELLYFIN_HOST") {
+				t.Fatalf("error = %v, want it to name JELLYFIN_HOST", err)
+			}
+		})
+	}
 }

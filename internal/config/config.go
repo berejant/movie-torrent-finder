@@ -59,6 +59,8 @@ type Config struct {
 	Retry Retry `envPrefix:"RETRY_"`
 
 	Trakt Trakt `envPrefix:"TRAKT_"`
+
+	Jellyfin Jellyfin `envPrefix:"JELLYFIN_"`
 }
 
 // Trakt configures the background sync that turns a trakt.tv watchlist into
@@ -69,6 +71,12 @@ type Trakt struct {
 
 	// ClientID is the trakt application client id, sent as trakt-api-key.
 	ClientID string `env:"CLIENT_ID"`
+
+	// ClientSecret is the matching secret. It is only used to refresh the
+	// access token, and it must belong to the same application as the refresh
+	// token the plugin stored — for a stock plugin install, that is the
+	// plugin's own compiled-in pair.
+	ClientSecret string `env:"CLIENT_SECRET"`
 
 	// TokenFile is the Trakt.xml written by the Emby/Jellyfin trakt plugin.
 	// Another application owns it: the access token is read from it on every
@@ -115,6 +123,27 @@ func (t Trakt) Interval() time.Duration {
 // Timeout returns the per-request timeout for the trakt API.
 func (t Trakt) Timeout() time.Duration {
 	return time.Duration(t.TimeoutSeconds) * time.Second
+}
+
+// Jellyfin is the media server whose trakt plugin holds the OAuth tokens. The
+// plugin's configuration is read over Jellyfin's API rather than off disk, so
+// this service needs no access to the plugin's config volume — and, unlike a
+// read-only file, it can write a refreshed token back.
+type Jellyfin struct {
+	Host   string `env:"HOST"`
+	APIKey string `env:"API_KEY"`
+
+	// UserID pins which linked media-server user's trakt account to use, by
+	// LinkedMbUserId. Unset means the first entry carrying an access token,
+	// which is the whole answer on a single-user install.
+	UserID string `env:"USER_ID"`
+
+	TimeoutSeconds int `env:"TIMEOUT_SECONDS" envDefault:"30"`
+}
+
+// Timeout returns the per-request timeout for the Jellyfin API.
+func (j Jellyfin) Timeout() time.Duration {
+	return time.Duration(j.TimeoutSeconds) * time.Second
 }
 
 // Tracker holds the configuration of a single tracker source. Its variables are
@@ -447,6 +476,28 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(c.Trakt.ClientID) == "" {
 			problems = append(problems, "TRAKT_CLIENT_ID must be set when TRAKT_ENABLED is true")
 		}
+		if strings.TrimSpace(c.Trakt.ClientSecret) == "" {
+			problems = append(problems, "TRAKT_CLIENT_SECRET must be set when TRAKT_ENABLED is true")
+		}
+		if strings.TrimSpace(c.Jellyfin.APIKey) == "" {
+			problems = append(problems, "JELLYFIN_API_KEY must be set when TRAKT_ENABLED is true")
+		}
+
+		host, err := url.Parse(strings.TrimRight(c.Jellyfin.Host, "/"))
+		switch {
+		case strings.TrimSpace(c.Jellyfin.Host) == "":
+			problems = append(problems, "JELLYFIN_HOST must be set when TRAKT_ENABLED is true")
+		case err != nil:
+			problems = append(problems, fmt.Sprintf("JELLYFIN_HOST is not a valid URL: %v", err))
+		case host.Scheme != "http" && host.Scheme != "https":
+			problems = append(problems, "JELLYFIN_HOST must use http or https")
+		case host.Host == "":
+			problems = append(problems, "JELLYFIN_HOST must include a host")
+		}
+
+		if c.Jellyfin.TimeoutSeconds < 1 {
+			problems = append(problems, fmt.Sprintf("JELLYFIN_TIMEOUT_SECONDS must be >= 1, got %d", c.Jellyfin.TimeoutSeconds))
+		}
 		if strings.TrimSpace(c.Trakt.TokenFile) == "" {
 			problems = append(problems, "TRAKT_TOKEN_FILE must be set when TRAKT_ENABLED is true")
 		}
@@ -568,6 +619,7 @@ func (c Config) LogValue() slog.Value {
 		slog.Group("trakt",
 			slog.Bool("enabled", c.Trakt.Enabled),
 			slog.String("client_id", redact(c.Trakt.ClientID)),
+			slog.String("client_secret", redact(c.Trakt.ClientSecret)),
 			slog.String("token_file", c.Trakt.TokenFile),
 			slog.String("base_url", c.Trakt.BaseURL),
 			slog.Int("interval_minutes", c.Trakt.IntervalMinutes),
@@ -578,6 +630,12 @@ func (c Config) LogValue() slog.Value {
 			slog.Bool("healthcheck_enabled", strings.TrimSpace(c.Trakt.HealthcheckUUID) != ""),
 			slog.String("healthcheck_uuid", redact(c.Trakt.HealthcheckUUID)),
 			slog.String("healthcheck_base_url", c.Trakt.HealthcheckBaseURL),
+		),
+		slog.Group("jellyfin",
+			slog.String("host", c.Jellyfin.Host),
+			slog.String("api_key", redact(c.Jellyfin.APIKey)),
+			slog.String("user_id", redact(c.Jellyfin.UserID)),
+			slog.Int("timeout_seconds", c.Jellyfin.TimeoutSeconds),
 		),
 	)
 }
