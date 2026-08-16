@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -79,18 +79,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Two published tags, nothing else:
+      #   push to the default branch -> :latest, the rolling tag the NAS pulls;
+      #   push of a git tag -> the version without the v, so v1.0.0 gives
+      #     :1.0.0. That is what type=semver does; type=ref,event=tag would
+      #     keep the leading v instead.
+      # Pull requests get a tag only so the build has a name; they never push.
       - name: Derive tags and labels
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ steps.image.outputs.name }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
+            type=raw,value=latest,enable=${{ github.ref_name == github.event.repository.default_branch }}
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=pr
 
       - name: Build and push
         uses: docker/build-push-action@v7
@@ -101,6 +104,10 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # On tag builds, bake the tag into the binary (main.version, served
+          # by GET /version). Branch and PR builds keep the "dev" default.
+          build-args: |
+            VERSION=${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dev' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # Synology's Container Manager trips over the extra attestation

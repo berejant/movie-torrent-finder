@@ -17,6 +17,7 @@ require (
 require (
 	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/getsentry/sentry-go v0.48.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/labstack/gommon v0.5.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
