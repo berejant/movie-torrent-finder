@@ -85,6 +85,10 @@ func (s *Server) registerMiddleware() {
 	// One structured line per request, with the request id so a UI action can
 	// be traced into the worker logs.
 	s.echo.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		// Health probes fire constantly (Docker/Synology) and would drown the log.
+		Skipper: func(c echo.Context) bool {
+			return strings.HasPrefix(c.Path(), "/health/")
+		},
 		LogStatus:    true,
 		LogURI:       true,
 		LogMethod:    true,
