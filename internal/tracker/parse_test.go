@@ -158,4 +158,3 @@ func TestExtractTolokaTopicDetails(t *testing.T) {
 		t.Error("Gone Girl (2014) must not be identified as mockbuster")
 	}
 }
-
