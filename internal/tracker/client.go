@@ -10,6 +10,8 @@ package tracker
 import (
 	"bytes"
 	"context"
+	"encoding/base32"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,7 +20,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
@@ -94,8 +98,12 @@ func (c *Client) Search(ctx context.Context, query string) ([]Torrent, error) {
 		return nil, fmt.Errorf("tracker: search query is empty")
 	}
 
-	if err := c.EnsureSession(ctx); err != nil {
-		return nil, err
+	query = c.applyQueryModifiers(query)
+
+	if !c.options.NoAuth && c.options.LoginPath != "" {
+		if err := c.EnsureSession(ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	searchURL, err := c.searchURL(query)
@@ -103,27 +111,52 @@ func (c *Client) Search(ctx context.Context, query string) ([]Torrent, error) {
 		return nil, err
 	}
 
-	doc, err := c.fetchDocument(ctx, searchURL, c.resolve(c.options.TrackerPath))
+	resp, err := c.do(ctx, http.MethodGet, searchURL, nil, kindDocument, c.resolve(c.options.TrackerPath))
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = resp.Body.Close() }()
 
-	// The session can expire between the check and the search. Re-login once
-	// and repeat before treating it as an error.
-	if c.looksLoggedOut(doc) {
-		c.logger.Info("session expired mid-search, re-authenticating")
-		if err := c.login(ctx); err != nil {
-			return nil, err
-		}
-		if doc, err = c.fetchDocument(ctx, searchURL, c.resolve(c.options.TrackerPath)); err != nil {
-			return nil, err
-		}
-		if c.looksLoggedOut(doc) {
-			return nil, ErrLoginFailed
-		}
+	if resp.StatusCode != http.StatusOK {
+		return nil, httpStatusError("fetch "+searchURL, resp.StatusCode)
 	}
 
-	torrents := c.parseResults(doc, searchURL)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		return nil, Transient(fmt.Errorf("tracker: read search body: %w", err))
+	}
+
+	var torrents []Torrent
+	trimmed := bytes.TrimSpace(body)
+	if bytes.HasPrefix(trimmed, []byte("[")) || bytes.HasPrefix(trimmed, []byte("{")) {
+		torrents, err = c.parseJSONResults(trimmed)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		doc, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, Transient(fmt.Errorf("tracker: parse html: %w", err))
+		}
+
+		// The session can expire between the check and the search. Re-login once
+		// and repeat before treating it as an error.
+		if !c.options.NoAuth && c.looksLoggedOut(doc) {
+			c.logger.Info("session expired mid-search, re-authenticating")
+			if err := c.login(ctx); err != nil {
+				return nil, err
+			}
+			if doc, err = c.fetchDocument(ctx, searchURL, c.resolve(c.options.TrackerPath)); err != nil {
+				return nil, err
+			}
+			if c.looksLoggedOut(doc) {
+				return nil, ErrLoginFailed
+			}
+		}
+
+		torrents = c.parseResults(doc, searchURL)
+	}
+
 	if len(torrents) == 0 {
 		return nil, ErrNoResults
 	}
@@ -133,6 +166,114 @@ func (c *Client) Search(ctx context.Context, query string) ([]Torrent, error) {
 	})
 
 	return torrents, nil
+}
+
+func (c *Client) applyQueryModifiers(query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return ""
+	}
+	suffix := strings.TrimSpace(c.options.SearchQuerySuffix)
+	if suffix == "" {
+		return query
+	}
+
+	pattern := `(?i)(?:^|[^a-z0-9а-яіїєґ])` + regexp.QuoteMeta(suffix) + `(?:$|[^a-z0-9а-яіїєґ])`
+	re := regexp.MustCompile(pattern)
+	if re.MatchString(query) {
+		return query
+	}
+
+	return query + " " + suffix
+}
+
+type apibayItem struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	InfoHash string `json:"info_hash"`
+	Leechers string `json:"leechers"`
+	Seeders  string `json:"seeders"`
+	NumFiles string `json:"num_files"`
+	Size     string `json:"size"`
+	Username string `json:"username"`
+	Added    string `json:"added"`
+	Status   string `json:"status"`
+	Category string `json:"category"`
+	IMDb     string `json:"imdb"`
+}
+
+func (c *Client) parseJSONResults(body []byte) ([]Torrent, error) {
+	var items []apibayItem
+	if err := json.Unmarshal(body, &items); err != nil {
+		return nil, fmt.Errorf("tracker: parse json: %w", err)
+	}
+
+	if len(items) == 0 {
+		return nil, ErrNoResults
+	}
+	if len(items) == 1 && (items[0].ID == "0" || items[0].Name == "No results returned" || items[0].InfoHash == "0000000000000000000000000000000000000000") {
+		return nil, ErrNoResults
+	}
+
+	var torrents []Torrent
+	for _, item := range items {
+		name := strings.TrimSpace(item.Name)
+		infoHash := strings.TrimSpace(item.InfoHash)
+		if name == "" || infoHash == "" || infoHash == "0000000000000000000000000000000000000000" {
+			continue
+		}
+
+		sizeBytes, _ := strconv.ParseInt(item.Size, 10, 64)
+		if c.cfg.MaxSizeBytes > 0 && sizeBytes > c.cfg.MaxSizeBytes {
+			continue
+		}
+
+		sizeText := media.HumanSize(sizeBytes)
+		attrs := media.Analyze(name, sizeText)
+		attrs.SizeBytes = sizeBytes
+
+		topicURL := fmt.Sprintf("https://thepiratebay.org/description.php?id=%s", item.ID)
+		downloadURL := fmt.Sprintf("https://itorrents.org/torrent/%s.torrent", strings.ToUpper(infoHash))
+
+		torrents = append(torrents, Torrent{
+			Title:       name,
+			Forum:       apibayCategoryName(item.Category),
+			TopicURL:    topicURL,
+			DownloadURL: downloadURL,
+			SizeText:    sizeText,
+			Attributes:  attrs,
+		})
+	}
+
+	if len(torrents) == 0 {
+		return nil, ErrNoResults
+	}
+
+	return torrents, nil
+}
+
+func apibayCategoryName(cat string) string {
+	switch cat {
+	case "201":
+		return "Video > Movies"
+	case "202":
+		return "Video > Movies DVDR"
+	case "207":
+		return "Video > HD - Movies"
+	case "208":
+		return "Video > HD - TV shows"
+	case "205":
+		return "Video > TV shows"
+	case "209":
+		return "Video > 3D"
+	case "200":
+		return "Video"
+	default:
+		if cat != "" {
+			return "Category " + cat
+		}
+		return ""
+	}
 }
 
 // SelectBest returns the top-ranked candidate.
@@ -196,25 +337,9 @@ func (c *Client) Download(ctx context.Context, torrent Torrent, dir, requestID s
 		return "", fmt.Errorf("tracker: create download dir: %w", err)
 	}
 
-	resp, err := c.do(ctx, http.MethodGet, torrent.DownloadURL, nil, kindDownload, torrent.TopicURL)
+	content, err := c.fetchTorrentContent(ctx, torrent)
 	if err != nil {
 		return "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", httpStatusError("download torrent", resp.StatusCode)
-	}
-
-	content, err := io.ReadAll(io.LimitReader(resp.Body, maxTorrentFileSize+1))
-	if err != nil {
-		return "", Transient(fmt.Errorf("tracker: read torrent body: %w", err))
-	}
-	if len(content) == 0 || len(content) > maxTorrentFileSize {
-		return "", ErrInvalidTorrent
-	}
-	if !looksLikeTorrent(content) {
-		return "", ErrInvalidTorrent
 	}
 
 	name := media.Filename(torrent.Title, c.cfg.Name, torrent.Quality, requestID)
@@ -249,9 +374,83 @@ func (c *Client) Download(ctx context.Context, torrent Torrent, dir, requestID s
 	return finalPath, nil
 }
 
+func (c *Client) fetchTorrentContent(ctx context.Context, torrent Torrent) ([]byte, error) {
+	urls := []string{torrent.DownloadURL}
+
+	if hash := extractInfoHash(torrent.DownloadURL); hash != "" {
+		urls = []string{
+			fmt.Sprintf("https://itorrents.org/torrent/%s.torrent", hash),
+			fmt.Sprintf("https://itorrents.net/torrent/%s.torrent", hash),
+		}
+	} else if strings.Contains(torrent.DownloadURL, "itorrents.org") {
+		alt := strings.Replace(torrent.DownloadURL, "itorrents.org", "itorrents.net", 1)
+		urls = append(urls, alt)
+	}
+
+	var lastErr error
+	for _, target := range urls {
+		resp, err := c.do(ctx, http.MethodGet, target, nil, kindDownload, torrent.TopicURL)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			lastErr = httpStatusError("download torrent", resp.StatusCode)
+			continue
+		}
+
+		content, err := io.ReadAll(io.LimitReader(resp.Body, maxTorrentFileSize+1))
+		_ = resp.Body.Close()
+		if err != nil {
+			lastErr = Transient(fmt.Errorf("tracker: read torrent body: %w", err))
+			continue
+		}
+		if len(content) == 0 || len(content) > maxTorrentFileSize {
+			lastErr = ErrInvalidTorrent
+			continue
+		}
+		if !looksLikeTorrent(content) {
+			lastErr = ErrInvalidTorrent
+			continue
+		}
+		return content, nil
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, ErrInvalidTorrent
+}
+
+var reBTIH = regexp.MustCompile(`(?i)(?:urn:btih:|/torrent/|^)([a-f0-9]{40}|[a-z2-7]{32})`)
+
+func extractInfoHash(raw string) string {
+	raw = strings.TrimSpace(raw)
+	match := reBTIH.FindStringSubmatch(raw)
+	if len(match) < 2 {
+		return ""
+	}
+	hash := match[1]
+	if len(hash) == 40 {
+		return strings.ToUpper(hash)
+	}
+	if len(hash) == 32 {
+		decoded, err := base32.StdEncoding.DecodeString(strings.ToUpper(hash))
+		if err == nil && len(decoded) == 20 {
+			return fmt.Sprintf("%040X", decoded)
+		}
+	}
+	return ""
+}
+
 // EnsureSession logs in when the current cookie session is not authenticated.
 // Concurrent callers collapse into a single login.
 func (c *Client) EnsureSession(ctx context.Context) error {
+	if c.options.NoAuth || c.options.LoginPath == "" {
+		return nil
+	}
 	_, err, _ := c.logins.Do("session", func() (any, error) {
 		authenticated, err := c.isLoggedIn(ctx)
 		if err != nil {
@@ -267,6 +466,9 @@ func (c *Client) EnsureSession(ctx context.Context) error {
 
 // login forces a fresh authentication, collapsing concurrent callers.
 func (c *Client) login(ctx context.Context) error {
+	if c.options.NoAuth || c.options.LoginPath == "" {
+		return nil
+	}
 	_, err, _ := c.logins.Do("login", func() (any, error) {
 		return nil, c.performLogin(ctx)
 	})
@@ -354,6 +556,14 @@ func (c *Client) fetchDocument(ctx context.Context, target, referer string) (*go
 }
 
 func (c *Client) searchURL(query string) (string, error) {
+	if c.baseURL.Host == "thepiratebay.org" || c.baseURL.Host == "www.thepiratebay.org" {
+		target, _ := url.Parse("https://apibay.org/q.php")
+		params := target.Query()
+		params.Set("q", query)
+		target.RawQuery = params.Encode()
+		return target.String(), nil
+	}
+
 	target, err := url.Parse(c.resolve(c.options.TrackerPath))
 	if err != nil {
 		return "", fmt.Errorf("tracker: build search url: %w", err)

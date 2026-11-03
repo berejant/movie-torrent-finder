@@ -25,9 +25,11 @@ const DefaultPresetName = "torrentpier"
 // presets is keyed by the name TRACKER_<SLUG>_PRESET takes, which defaults to
 // the tracker slug — so TRACKERS=toloka,mazepa needs no PRESET variable at all.
 var presets = map[string]Preset{
-	"torrentpier": {Options: torrentPierOptions()},
-	"mazepa":      {BaseURL: "https://mazepa.to", Options: torrentPierOptions()},
-	"toloka":      {BaseURL: "https://toloka.to", Options: tolokaOptions()},
+	"torrentpier":  {Options: torrentPierOptions()},
+	"mazepa":       {BaseURL: "https://mazepa.to", Options: torrentPierOptions()},
+	"toloka":       {BaseURL: "https://toloka.to", Options: tolokaOptions()},
+	"piratebay":    {BaseURL: "https://apibay.org", Options: pirateBayOptions()},
+	"thepiratebay": {BaseURL: "https://apibay.org", Options: pirateBayOptions()},
 }
 
 // LookupPreset returns a copy of the named preset. The copy matters: the
@@ -110,6 +112,24 @@ func tolokaOptions() TrackerOptions {
 		ForumLinkSelector: "a[href*='tracker.php?f=']",
 		SizeCellIndex:     6,
 		TopicBodySelector: ".postbody",
+	}
+}
+
+// pirateBayOptions targets The Pirate Bay (apibay.org API backend and HTML mirrors).
+//
+// No login is required. The query is suffixed with "ukr" to filter Ukrainian-language films.
+func pirateBayOptions() TrackerOptions {
+	return TrackerOptions{
+		NoAuth:            true,
+		SearchQuerySuffix: "ukr",
+		TrackerPath:       "/q.php",
+		SearchQueryField:  "q",
+
+		ResultRowSelector:    "#searchResult tbody tr, #searchResult tr:not(.header)",
+		TopicLinkSelector:    "a.detLink, a[href*='/torrent/'], a[href*='description.php']",
+		DownloadLinkSelector: "a[href^='magnet:'], a[href*='itorrents']",
+		ForumLinkSelector:    "td.vertTh a, a[href*='/browse/']",
+		SizeCellIndex:        -1,
 	}
 }
 

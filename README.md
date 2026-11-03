@@ -38,16 +38,18 @@ tracker means listing its slug and supplying credentials.
 |---|---|---|
 | `toloka` | toloka.to | phpBB2 engine; search requires a session |
 | `mazepa` | mazepa.to | TorrentPier |
+| `piratebay` | thepiratebay.org / apibay.org | public tracker, no credentials required, auto-appends `ukr` to queries |
 | `torrentpier` | — | the generic engine, for any other TorrentPier install |
 
 ```sh
-TRACKERS=toloka,mazepa
+TRACKERS=toloka,mazepa,piratebay
 TRACKER_TOLOKA_LOGIN=…
 TRACKER_TOLOKA_PASSWORD=…
 TRACKER_TOLOKA_PRIORITY=1
 TRACKER_MAZEPA_LOGIN=…
 TRACKER_MAZEPA_PASSWORD=…
 TRACKER_MAZEPA_PRIORITY=2
+TRACKER_PIRATEBAY_PRIORITY=3
 ```
 
 Any preset value can be corrected without a code change via

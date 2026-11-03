@@ -217,6 +217,13 @@ type TrackerOptions struct {
 	// TopicBodySelector finds the message element of the initial release post on
 	// a topic page.
 	TopicBodySelector string `json:"topic_body_selector"`
+
+	// NoAuth marks public trackers that need no login.
+	NoAuth bool `json:"no_auth,omitempty"`
+
+	// SearchQuerySuffix is appended to the search query if not already present
+	// (e.g. "ukr" to filter films in Ukrainian on international trackers).
+	SearchQuerySuffix string `json:"search_query_suffix,omitempty"`
 }
 
 // DefaultTrackerOptions returns the TorrentPier profile, which is what a
@@ -448,11 +455,13 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(tracker.Name) == "" {
 			problems = append(problems, prefix+"NAME must not be empty (it is part of saved filenames)")
 		}
-		if strings.TrimSpace(tracker.Login) == "" {
-			problems = append(problems, prefix+"LOGIN must not be empty")
-		}
-		if strings.TrimSpace(tracker.Password) == "" {
-			problems = append(problems, prefix+"PASSWORD must not be empty")
+		if !tracker.Options.NoAuth && tracker.Options.LoginPath != "" {
+			if strings.TrimSpace(tracker.Login) == "" {
+				problems = append(problems, prefix+"LOGIN must not be empty")
+			}
+			if strings.TrimSpace(tracker.Password) == "" {
+				problems = append(problems, prefix+"PASSWORD must not be empty")
+			}
 		}
 
 		base, err := url.Parse(strings.TrimRight(tracker.BaseURL, "/"))

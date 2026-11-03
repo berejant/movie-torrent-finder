@@ -474,3 +474,57 @@ func TestLoadMockbusterCustom(t *testing.T) {
 		t.Errorf("MockbusterCompanies = %v, want ['Custom Studio 1', 'Custom Studio 2']", cfg.MockbusterCompanies)
 	}
 }
+
+func TestLoadPirateBayPreset(t *testing.T) {
+	baseEnv(t)
+	// piratebay is a public tracker and needs no credentials
+	t.Setenv("TRACKERS", "piratebay")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if len(cfg.Trackers) != 1 {
+		t.Fatalf("loaded %d trackers, want 1", len(cfg.Trackers))
+	}
+
+	pb := cfg.Trackers[0]
+	if pb.Name != "piratebay" || pb.Preset != "piratebay" {
+		t.Fatalf("tracker = %q/%q, want piratebay/piratebay", pb.Name, pb.Preset)
+	}
+	if pb.BaseURL != "https://apibay.org" {
+		t.Errorf("base url = %q, want https://apibay.org", pb.BaseURL)
+	}
+	if !pb.Options.NoAuth {
+		t.Error("NoAuth = false, want true")
+	}
+	if pb.Options.SearchQuerySuffix != "ukr" {
+		t.Errorf("SearchQuerySuffix = %q, want ukr", pb.Options.SearchQuerySuffix)
+	}
+}
+
+func TestLoadThePirateBayAlias(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("TRACKERS", "thepiratebay")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if len(cfg.Trackers) != 1 {
+		t.Fatalf("loaded %d trackers, want 1", len(cfg.Trackers))
+	}
+
+	pb := cfg.Trackers[0]
+	if pb.Name != "thepiratebay" || pb.Preset != "thepiratebay" {
+		t.Fatalf("tracker = %q/%q, want thepiratebay/thepiratebay", pb.Name, pb.Preset)
+	}
+	if !pb.Options.NoAuth {
+		t.Error("NoAuth = false, want true")
+	}
+	if pb.Options.SearchQuerySuffix != "ukr" {
+		t.Errorf("SearchQuerySuffix = %q, want ukr", pb.Options.SearchQuerySuffix)
+	}
+}
