@@ -47,6 +47,7 @@ No Node build step. No SPA. Everything ships as one static binary plus embedded 
 | `mazepa` | mazepa.to | TorrentPier | publish, status, forum, topic, author, **size/download**, seeders, leechers, replies, added |
 | `torrentpier` | — | TorrentPier | same as above; for any other install |
 | `toloka` | toloka.to | phpBB2-derived | icon, forum, topic, author, checked, download, **size**, status, completed, seeders, leechers, replies, added |
+| `piratebay` | apibay.org | The Pirate Bay / apibay API | public tracker (no auth), auto-appends `ukr` to queries, downloads `.torrent` via itorrents |
 
 toloka specifics worth knowing: search results are gated behind a session (an anonymous visitor gets the table chrome and zero rows); relative hrefs carry no leading slash (`download.php?id=…`), so they only resolve against the search page URL; the logged-in header links `/login.php?logout=true`, so the register link — not a login link — is what distinguishes the two session states; and the login form ticks `autologin`, which the client posts via `login_extra_fields`.
 
@@ -82,8 +83,8 @@ Saved pages from both trackers live in `html-examples/<slug>/`, and the parser t
 | `WORKERS` | `5` | requests searched at once, across all trackers |
 | `TRACKER_<SLUG>_PRESET` | the slug, else `torrentpier` | `toloka` \| `mazepa` \| `torrentpier` |
 | `TRACKER_<SLUG>_BASE_URL` | from the preset | required when the preset names no site |
-| `TRACKER_<SLUG>_LOGIN` | — | **required** |
-| `TRACKER_<SLUG>_PASSWORD` | — | **required** |
+| `TRACKER_<SLUG>_LOGIN` | — | **required** for auth-enabled trackers (optional for `piratebay`) |
+| `TRACKER_<SLUG>_PASSWORD` | — | **required** for auth-enabled trackers (optional for `piratebay`) |
 | `TRACKER_<SLUG>_PRIORITY` | `1` | lower wins; only breaks ties between equal releases |
 | `TRACKER_<SLUG>_TIMEOUT_SECONDS` | `30` | per-request timeout |
 | `TRACKER_<SLUG>_RPS` | `1` | rate limit for this tracker, shared by all workers |

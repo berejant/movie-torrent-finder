@@ -224,3 +224,195 @@ func TestLoginFailureIsNotTransient(t *testing.T) {
 		t.Error("bad credentials must not be retried as a transient failure")
 	}
 }
+
+func TestApplyQueryModifiers(t *testing.T) {
+	client := &Client{
+		options: config.TrackerOptions{
+			SearchQuerySuffix: "ukr",
+		},
+	}
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Inception", "Inception ukr"},
+		{"Inception 2010", "Inception 2010 ukr"},
+		{"Inception ukr", "Inception ukr"},
+		{"Inception UKR", "Inception UKR"},
+		{"Inception [ukr]", "Inception [ukr]"},
+		{"Inception (ukr)", "Inception (ukr)"},
+		{"ukr Inception", "ukr Inception"},
+		{"Початок", "Початок ukr"},
+		{"Початок ukr", "Початок ukr"},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		got := client.applyQueryModifiers(tt.input)
+		if got != tt.want {
+			t.Errorf("applyQueryModifiers(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestExtractInfoHash(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{
+			input: "magnet:?xt=urn:btih:EAB42BC99049DD581A0AF9DC381FCAB94718EF49&dn=Avatar",
+			want:  "EAB42BC99049DD581A0AF9DC381FCAB94718EF49",
+		},
+		{
+			input: "magnet:?xt=urn:btih:eab42bc99049dd581a0af9dc381fcab94718ef49&dn=Avatar",
+			want:  "EAB42BC99049DD581A0AF9DC381FCAB94718EF49",
+		},
+		{
+			input: "https://itorrents.org/torrent/EAB42BC99049DD581A0AF9DC381FCAB94718EF49.torrent",
+			want:  "EAB42BC99049DD581A0AF9DC381FCAB94718EF49",
+		},
+		{
+			input: "EAB42BC99049DD581A0AF9DC381FCAB94718EF49",
+			want:  "EAB42BC99049DD581A0AF9DC381FCAB94718EF49",
+		},
+		{
+			input: "https://toloka.to/download.php?id=123",
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		got := extractInfoHash(tt.input)
+		if got != tt.want {
+			t.Errorf("extractInfoHash(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestPirateBaySearchAndDownload(t *testing.T) {
+	var requestedQuery string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/q.php", func(w http.ResponseWriter, r *http.Request) {
+		requestedQuery = r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "application/json")
+		// Simulate apibay.org response
+		_, _ = io.WriteString(w, `[
+			{
+				"id": "84785121",
+				"name": "Primetime (2026) 720p WEB-DL [Ukr Dub]",
+				"info_hash": "1225555D60598DE8BF688BDA3905E5E4DB3FB6AE",
+				"size": "4893697434",
+				"category": "207"
+			},
+			{
+				"id": "84785124",
+				"name": "Primetime (2026) 1080p WEB-DL [Ukr Dub]",
+				"info_hash": "611AC6B64A2A0E421E2C9CDB70AD2C7EC3F85304",
+				"size": "6440740683",
+				"category": "207"
+			}
+		]`)
+	})
+
+	mux.HandleFunc("/torrent/611AC6B64A2A0E421E2C9CDB70AD2C7EC3F85304.torrent", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-bittorrent")
+		_, _ = io.WriteString(w, "d8:announce20:http://tracker/annce4:infod4:name9:primetimeee")
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	preset, ok := config.LookupPreset("piratebay")
+	if !ok {
+		t.Fatal("piratebay preset not found")
+	}
+
+	cfg := config.Tracker{
+		Name:           "piratebay",
+		BaseURL:        server.URL,
+		Priority:       1,
+		TimeoutSeconds: 5,
+		RPS:            50,
+		UserAgent:      config.DefaultUserAgent,
+		Options:        preset.Options,
+	}
+
+	client, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	torrents, err := client.Search(context.Background(), "Primetime")
+	if err != nil {
+		t.Fatalf("Search() error: %v", err)
+	}
+
+	if want := "Primetime ukr"; requestedQuery != want {
+		t.Errorf("requestedQuery = %q, want %q", requestedQuery, want)
+	}
+
+	if len(torrents) != 2 {
+		t.Fatalf("len(torrents) = %d, want 2", len(torrents))
+	}
+
+	// 1080p must rank ahead of 720p
+	best := torrents[0]
+	if best.Quality != media.Quality1080 {
+		t.Errorf("best.Quality = %q, want 1080p", best.Quality)
+	}
+	if want := "Primetime (2026) 1080p WEB-DL [Ukr Dub]"; best.Title != want {
+		t.Errorf("best.Title = %q, want %q", best.Title, want)
+	}
+
+	// Override DownloadURL to point to test server's torrent path
+	best.DownloadURL = server.URL + "/torrent/611AC6B64A2A0E421E2C9CDB70AD2C7EC3F85304.torrent"
+	dir := t.TempDir()
+	path, err := client.Download(context.Background(), best, dir, "01KYYJA6CMF8N3Q77NAM0VJ4DQ")
+	if err != nil {
+		t.Fatalf("Download() error: %v", err)
+	}
+
+	if !strings.HasSuffix(path, "Primetime 2026 1080p WEB-DL Ukr Dub-piratebay-1080p-01KYYJA6CMF8N3Q77NAM0VJ4DQ.torrent") {
+		t.Errorf("unexpected saved file path: %s", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error: %v", err)
+	}
+	if !looksLikeTorrent(data) {
+		t.Error("saved file is not a valid torrent")
+	}
+}
+
+func TestPirateBayNoResults(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/q.php", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[{"id":"0","name":"No results returned","info_hash":"0000000000000000000000000000000000000000"}]`)
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	preset, _ := config.LookupPreset("piratebay")
+	cfg := config.Tracker{
+		Name:      "piratebay",
+		BaseURL:   server.URL,
+		Priority:  1,
+		Options:   preset.Options,
+		UserAgent: config.DefaultUserAgent,
+	}
+
+	client, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	_, err = client.Search(context.Background(), "Nonexistent")
+	if err != ErrNoResults {
+		t.Fatalf("Search() error = %v, want ErrNoResults", err)
+	}
+}

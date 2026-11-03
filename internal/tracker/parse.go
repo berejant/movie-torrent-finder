@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
@@ -65,11 +66,16 @@ func (c *Client) parseRow(row *goquery.Selection, base *url.URL) (Torrent, bool)
 
 	sizeText := c.findSizeText(row)
 
+	downloadURL := absoluteURL(base, downloadHref)
+	if hash := extractInfoHash(downloadHref); hash != "" {
+		downloadURL = fmt.Sprintf("https://itorrents.org/torrent/%s.torrent", hash)
+	}
+
 	return Torrent{
 		Title:       title,
 		Forum:       forum,
 		TopicURL:    absoluteURL(base, strings.TrimSpace(topic.AttrOr("href", ""))),
-		DownloadURL: absoluteURL(base, downloadHref),
+		DownloadURL: downloadURL,
 		SizeText:    sizeText,
 		Attributes:  media.Analyze(title, sizeText),
 	}, true
