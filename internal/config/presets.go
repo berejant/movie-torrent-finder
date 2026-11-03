@@ -72,6 +72,7 @@ func torrentPierOptions() TrackerOptions {
 		DownloadLinkSelector: "a[href*='dl.php?id=']",
 		ForumLinkSelector:    "a[href*='forum-']",
 		SizeCellIndex:        5,
+		TopicBodySelector:    ".post_body, .postbody, td.message",
 	}
 }
 
@@ -108,6 +109,7 @@ func tolokaOptions() TrackerOptions {
 		// matched on f= rather than on tracker.php alone.
 		ForumLinkSelector: "a[href*='tracker.php?f=']",
 		SizeCellIndex:     6,
+		TopicBodySelector: ".postbody",
 	}
 }
 

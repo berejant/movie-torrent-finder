@@ -152,6 +152,12 @@ The slug is the tracker's identity: it picks the variables, the preset, and the 
 |---|---|---|
 | `DUPLICATE_CHECK_ENABLED` | `true` | set `false` to globally disable uniqueness checks |
 
+#### Mockbuster Filter
+| Variable | Default | Notes |
+|---|---|---|
+| `MOCKBUSTER_FILTER_ENABLED` | `true` | set `false` to globally disable mockbuster filtering |
+| `MOCKBUSTER_COMPANIES` | built-in defaults | comma-separated list of studios (The Asylum, Full Moon Features, Jagged Edge Productions, ITN Studios, etc.) |
+
 #### Trakt.tv watchlist (prefix `TRAKT_`) and Jellyfin (prefix `JELLYFIN_`)
 | Variable | Default | Notes |
 |---|---|---|
@@ -262,6 +268,9 @@ Candidates from **all trackers are merged into one list** and ordered by, in str
 5. **First-seen order** (stable sort, so ties are reproducible)
 
 The picture wins over its source: a 2160p release on the second-choice tracker beats a 1080p one on the first, and tracker priority only separates candidates that are otherwise equally good. Priority does outrank size, so a smaller release on the preferred tracker wins at equal quality and codec.
+
+**Mockbuster filter:**
+Low-budget mockbusters and cash-in releases from imitation studios (such as The Asylum, Full Moon Features, Jagged Edge Productions, ITN Studios, etc.) are filtered out before selection. Candidates are checked against the release title and the topic page description/company field. If a candidate matches a mockbuster studio, it is skipped in favor of the next ranked candidate. If every candidate is a mockbuster, the request transitions to `NOT_FOUND`. Set `MOCKBUSTER_FILTER_ENABLED=false` to disable.
 
 **Canonical quality token** — parsed from the release title and normalized, because it is embedded in the saved filename:
 

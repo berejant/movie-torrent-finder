@@ -45,6 +45,9 @@ type Pool struct {
 
 // New creates the pool. Call Start to run it.
 func New(store *storage.Store, trackers []*tracker.Client, cfg config.Config, logger *slog.Logger) *Pool {
+	if cfg.MockbusterFilterEnabled && len(cfg.MockbusterCompanies) == 0 {
+		cfg.MockbusterCompanies = media.DefaultMockbusterCompanies
+	}
 	return &Pool{
 		store:    store,
 		trackers: trackers,
@@ -170,7 +173,66 @@ func (p *Pool) process(ctx context.Context, logger *slog.Logger, request storage
 			"tracker", failure.tracker, "err", failure.err)
 	}
 
-	best := candidates[0]
+	var (
+		best              *candidate
+		transientInspects []trackerFailure
+	)
+
+	for _, cand := range candidates {
+		if p.cfg.MockbusterFilterEnabled {
+			// 1. Fast check against the release title
+			if isMock, reason := media.IsTitleMockbuster(cand.torrent.Title, p.cfg.MockbusterCompanies); isMock {
+				logger.Info("skipping candidate: mockbuster detected in title",
+					"tracker", cand.client.Name(),
+					"title", cand.torrent.Title,
+					"reason", reason,
+				)
+				continue
+			}
+
+			// 2. Fetch and inspect topic page metadata
+			if cand.torrent.TopicURL != "" {
+				details, err := cand.client.FetchTopicDetails(taskCtx, cand.torrent.TopicURL)
+				if err != nil {
+					logger.Warn("could not fetch topic details for candidate",
+						"tracker", cand.client.Name(),
+						"topic", cand.torrent.TopicURL,
+						"err", err,
+					)
+					if tracker.IsTransient(err) {
+						transientInspects = append(transientInspects, trackerFailure{
+							tracker: cand.client.Name(),
+							err:     err,
+						})
+					}
+				} else if isMock, reason := media.IsMockbuster(cand.torrent.Title, details.Company, details.Metadata, p.cfg.MockbusterCompanies); isMock {
+					logger.Info("skipping candidate: mockbuster detected",
+						"tracker", cand.client.Name(),
+						"title", cand.torrent.Title,
+						"topic", cand.torrent.TopicURL,
+						"company", details.Company,
+						"reason", reason,
+					)
+					continue
+				}
+			}
+		}
+
+		chosen := cand
+		best = &chosen
+		break
+	}
+
+	if best == nil {
+		if len(transientInspects) > 0 && len(transientInspects) == len(candidates) {
+			p.handleError(ctx, logger, request, combineFailures(transientInspects), "inspect")
+			return
+		}
+		logger.Info("all candidates were filtered out as mockbusters")
+		p.handleError(ctx, logger, request, tracker.ErrNoResults, "filter")
+		return
+	}
+
 	result := storage.Result{
 		Tracker:  best.client.Name(),
 		Title:    best.torrent.Title,

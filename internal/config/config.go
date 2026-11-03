@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/berejant/movie-torrent-finder/internal/media"
 	"github.com/caarlos0/env/v10"
 	"github.com/joho/godotenv"
 )
@@ -42,6 +43,12 @@ type Config struct {
 	AuthPassword string `env:"AUTH_PASSWORD"`
 
 	DuplicateCheckEnabled bool `env:"DUPLICATE_CHECK_ENABLED" envDefault:"true"`
+
+	// MockbusterFilterEnabled skips mockbusters and cash-in releases from
+	// studios known for churned low-budget copies of blockbusters (The Asylum,
+	// Full Moon, Jagged Edge, ITN Studios, etc.).
+	MockbusterFilterEnabled bool     `env:"MOCKBUSTER_FILTER_ENABLED" envDefault:"true"`
+	MockbusterCompanies     []string `env:"MOCKBUSTER_COMPANIES" envSeparator:","`
 
 	// Workers is the size of the shared worker pool: how many requests are
 	// searched at once. It is not per tracker — one request queries every
@@ -206,6 +213,10 @@ type TrackerOptions struct {
 	// but column order is the knob most likely to differ between trackers.
 	// A negative value skips the direct lookup and scans the whole row.
 	SizeCellIndex int `json:"size_cell_index"`
+
+	// TopicBodySelector finds the message element of the initial release post on
+	// a topic page.
+	TopicBodySelector string `json:"topic_body_selector"`
 }
 
 // DefaultTrackerOptions returns the TorrentPier profile, which is what a
@@ -233,6 +244,19 @@ func Load() (Config, error) {
 	var cfg Config
 	if err := env.Parse(&cfg); err != nil {
 		return Config{}, fmt.Errorf("config: %w", err)
+	}
+
+	if cfg.MockbusterFilterEnabled {
+		var cleaned []string
+		for _, comp := range cfg.MockbusterCompanies {
+			if trimmed := strings.TrimSpace(comp); trimmed != "" {
+				cleaned = append(cleaned, trimmed)
+			}
+		}
+		if len(cleaned) == 0 {
+			cleaned = media.DefaultMockbusterCompanies
+		}
+		cfg.MockbusterCompanies = cleaned
 	}
 
 	trackers, err := loadTrackers(cfg.TrackerNames)
