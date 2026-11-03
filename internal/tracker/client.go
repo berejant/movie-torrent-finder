@@ -143,6 +143,44 @@ func (c *Client) SelectBest(torrents []Torrent) (Torrent, error) {
 	return torrents[0], nil
 }
 
+// FetchTopicDetails loads the topic page and parses its description and metadata.
+func (c *Client) FetchTopicDetails(ctx context.Context, topicURL string) (TopicDetails, error) {
+	if strings.TrimSpace(topicURL) == "" {
+		return TopicDetails{}, nil
+	}
+
+	if err := c.EnsureSession(ctx); err != nil {
+		return TopicDetails{}, err
+	}
+
+	searchReferer := c.resolve(c.options.TrackerPath)
+	doc, err := c.fetchDocument(ctx, topicURL, searchReferer)
+	if err != nil {
+		if strings.Contains(err.Error(), "returned 404") {
+			return TopicDetails{}, nil
+		}
+		return TopicDetails{}, err
+	}
+
+	if c.looksLoggedOut(doc) {
+		c.logger.Info("session expired fetching topic, re-authenticating")
+		if err := c.login(ctx); err != nil {
+			return TopicDetails{}, err
+		}
+		if doc, err = c.fetchDocument(ctx, topicURL, searchReferer); err != nil {
+			if strings.Contains(err.Error(), "returned 404") {
+				return TopicDetails{}, nil
+			}
+			return TopicDetails{}, err
+		}
+		if c.looksLoggedOut(doc) {
+			return TopicDetails{}, ErrLoginFailed
+		}
+	}
+
+	return c.ParseTopicDetails(doc), nil
+}
+
 func (c *Client) ranked(t Torrent) media.Ranked {
 	return media.Ranked{Attributes: t.Attributes, Priority: c.cfg.Priority}
 }

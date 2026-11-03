@@ -129,3 +129,33 @@ func TestTolokaSessionSelectors(t *testing.T) {
 		t.Errorf("anonymous page yielded %d rows, want 0", len(torrents))
 	}
 }
+
+func TestExtractTolokaTopicDetails(t *testing.T) {
+	client := presetClient(t, "toloka", "toloka", "https://toloka.to")
+
+	docOdyssey := loadFixture(t, "toloka/t699884.html")
+	odysseyDetails := client.ParseTopicDetails(docOdyssey)
+	if odysseyDetails.Company != "The Asylum" {
+		t.Errorf("Odyssey company = %q, want 'The Asylum'", odysseyDetails.Company)
+	}
+	if !strings.Contains(odysseyDetails.Metadata, "Країна: США") {
+		t.Errorf("Odyssey metadata missing country: %q", odysseyDetails.Metadata)
+	}
+	if strings.Contains(odysseyDetails.Metadata, "Після десяти років кривавої") {
+		t.Error("Odyssey metadata should not contain the synopsis")
+	}
+
+	docGoneGirl := loadFixture(t, "toloka/torrent-page.html")
+	goneGirlDetails := client.ParseTopicDetails(docGoneGirl)
+	wantGoneGirlCompany := "Artemple - Hollywood, New Regency Pictures, Pacific Standard, Regency Enterprises"
+	if goneGirlDetails.Company != wantGoneGirlCompany {
+		t.Errorf("Gone Girl company = %q, want %q", goneGirlDetails.Company, wantGoneGirlCompany)
+	}
+	if isMock, _ := media.IsMockbuster("The Odyssey (2026)", odysseyDetails.Company, odysseyDetails.Metadata, nil); !isMock {
+		t.Error("Odyssey (2026) must be identified as mockbuster")
+	}
+	if isMock, _ := media.IsMockbuster("Gone Girl (2014)", goneGirlDetails.Company, goneGirlDetails.Metadata, nil); isMock {
+		t.Error("Gone Girl (2014) must not be identified as mockbuster")
+	}
+}
+

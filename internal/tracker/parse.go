@@ -2,11 +2,17 @@ package tracker
 
 import (
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
 
 	"github.com/berejant/movie-torrent-finder/internal/media"
+)
+
+var (
+	reSynopsis      = regexp.MustCompile(`(?i)^\s*(?:сюжет|опис|синопсис|описание|synopsis|description|plot)\s*[:：\-–—]`)
+	reCompanyPrefix = regexp.MustCompile(`(?i)^\s*(?:кінокомпані[яії]|кинокомпани[яи]|студі[яії]|студи[яи]|виробництво|производство|виробник|production(?:\s+compan(?:y|ies))?|compan(?:y|ies)|studios?|distributor|дистриб[’'ʼ]?ютор|випущено|выпущено)\s*[:：\-–—]\s*(.+)$`)
 )
 
 // Seeder and leecher columns are parsed by nobody on purpose: results are
@@ -105,4 +111,70 @@ func absoluteURL(base *url.URL, href string) string {
 		return parsed.String()
 	}
 	return base.ResolveReference(parsed).String()
+}
+
+// TopicDetails contains metadata extracted from a topic page.
+type TopicDetails struct {
+	Title    string
+	Company  string
+	Metadata string
+	FullText string
+}
+
+// ParseTopicDetails parses the initial release post of a topic page to extract
+// metadata such as production company/studio and header info before synopsis.
+func (c *Client) ParseTopicDetails(doc *goquery.Document) TopicDetails {
+	if doc == nil {
+		return TopicDetails{}
+	}
+
+	selector := c.options.TopicBodySelector
+	if selector == "" {
+		selector = "span.postbody, div.post_body, .postbody, .post_body, td.message, div.message"
+	}
+
+	firstPost := doc.Find(selector).First()
+	if firstPost.Length() == 0 {
+		return TopicDetails{}
+	}
+
+	firstPost.Find("br").ReplaceWithHtml("\n")
+
+	rawText := firstPost.Text()
+	lines := strings.Split(rawText, "\n")
+
+	var (
+		companies []string
+		metaLines []string
+		allLines  []string
+		inMeta    = true
+	)
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		allLines = append(allLines, trimmed)
+
+		if reSynopsis.MatchString(trimmed) {
+			inMeta = false
+		}
+		if inMeta {
+			metaLines = append(metaLines, trimmed)
+		}
+
+		if match := reCompanyPrefix.FindStringSubmatch(trimmed); len(match) == 2 {
+			company := strings.TrimSpace(match[1])
+			if company != "" {
+				companies = append(companies, company)
+			}
+		}
+	}
+
+	return TopicDetails{
+		Company:  strings.Join(companies, ", "),
+		Metadata: strings.Join(metaLines, "\n"),
+		FullText: strings.Join(allLines, "\n"),
+	}
 }

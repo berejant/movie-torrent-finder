@@ -431,3 +431,46 @@ func TestLoadRejectsABadJellyfinTimeout(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadMockbusterDefaults(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("TRACKERS", "toloka")
+	t.Setenv("TRACKER_TOLOKA_LOGIN", "tester")
+	t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.MockbusterFilterEnabled {
+		t.Error("MockbusterFilterEnabled = false, want true by default")
+	}
+	if len(cfg.MockbusterCompanies) == 0 {
+		t.Fatal("MockbusterCompanies is empty, want default list")
+	}
+	if cfg.MockbusterCompanies[0] != "The Asylum" {
+		t.Errorf("MockbusterCompanies[0] = %q, want 'The Asylum'", cfg.MockbusterCompanies[0])
+	}
+}
+
+func TestLoadMockbusterCustom(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("TRACKERS", "toloka")
+	t.Setenv("TRACKER_TOLOKA_LOGIN", "tester")
+	t.Setenv("TRACKER_TOLOKA_PASSWORD", "secret")
+	t.Setenv("MOCKBUSTER_FILTER_ENABLED", "false")
+	t.Setenv("MOCKBUSTER_COMPANIES", "Custom Studio 1, Custom Studio 2")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.MockbusterFilterEnabled {
+		t.Error("MockbusterFilterEnabled = true, want false")
+	}
+	if len(cfg.MockbusterCompanies) != 2 || cfg.MockbusterCompanies[0] != "Custom Studio 1" {
+		t.Errorf("MockbusterCompanies = %v, want ['Custom Studio 1', 'Custom Studio 2']", cfg.MockbusterCompanies)
+	}
+}

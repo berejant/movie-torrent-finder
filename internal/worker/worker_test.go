@@ -19,9 +19,10 @@ import (
 
 // release is one row a fake tracker renders.
 type release struct {
-	id    int
-	title string
-	size  string
+	id      int
+	title   string
+	size    string
+	company string
 }
 
 // fakeTracker is a minimal TorrentPier stand-in: it authenticates, renders the
@@ -86,6 +87,27 @@ func fakeTracker(t *testing.T, releases []release, fail bool) *httptest.Server {
 		_, _ = io.WriteString(w, "d8:announce20:http://tracker/annce4:infod4:name4:teseee")
 	})
 
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/topic-") {
+			if fail {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			topicID := strings.TrimPrefix(r.URL.Path, "/topic-")
+			comp := "Warner Bros"
+			for _, item := range releases {
+				if fmt.Sprintf("%d", item.id) == topicID && item.company != "" {
+					comp = item.company
+					break
+				}
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, `<html><body>%s<div class="post_body">Кінокомпанія: %s<br>Сюжет: A movie.</div></body></html>`, loggedIn, comp)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server
@@ -99,9 +121,10 @@ func testPool(t *testing.T, store *storage.Store, servers map[string]*httptest.S
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	cfg := config.Config{
-		TorrentFilesDir: t.TempDir(),
-		Workers:         1,
-		Retry:           config.Retry{MaxAttempts: 5, BaseSeconds: 3, MaxBackoffSeconds: 60},
+		TorrentFilesDir:         t.TempDir(),
+		Workers:                 1,
+		Retry:                   config.Retry{MaxAttempts: 5, BaseSeconds: 3, MaxBackoffSeconds: 60},
+		MockbusterFilterEnabled: true,
 	}
 
 	clients := make([]*tracker.Client, 0, len(order))
@@ -176,8 +199,8 @@ func queueOne(t *testing.T, query string) *storage.Store {
 // when it sits on the tracker configured second.
 func TestBestQualityWinsAcrossTrackers(t *testing.T) {
 	servers := map[string]*httptest.Server{
-		"toloka": fakeTracker(t, []release{{1, "Dune Part Two 2024 1080p x265", "12 GB"}}, false),
-		"mazepa": fakeTracker(t, []release{{2, "Dune Part Two 2024 2160p x265", "40 GB"}}, false),
+		"toloka": fakeTracker(t, []release{{1, "Dune Part Two 2024 1080p x265", "12 GB", ""}}, false),
+		"mazepa": fakeTracker(t, []release{{2, "Dune Part Two 2024 2160p x265", "40 GB", ""}}, false),
 	}
 
 	store := queueOne(t, "Dune Part Two")
@@ -204,8 +227,8 @@ func TestBestQualityWinsAcrossTrackers(t *testing.T) {
 // With nothing to choose between them, the priority order decides.
 func TestTrackerPriorityBreaksTiesAcrossTrackers(t *testing.T) {
 	servers := map[string]*httptest.Server{
-		"toloka": fakeTracker(t, []release{{1, "Dune Part Two 2024 1080p x265", "12 GB"}}, false),
-		"mazepa": fakeTracker(t, []release{{2, "Dune Part Two 2024 1080p x265", "40 GB"}}, false),
+		"toloka": fakeTracker(t, []release{{1, "Dune Part Two 2024 1080p x265", "12 GB", ""}}, false),
+		"mazepa": fakeTracker(t, []release{{2, "Dune Part Two 2024 1080p x265", "40 GB", ""}}, false),
 	}
 
 	store := queueOne(t, "Dune Part Two")
@@ -225,7 +248,7 @@ func TestTrackerPriorityBreaksTiesAcrossTrackers(t *testing.T) {
 func TestPartialTrackerFailureStillDownloads(t *testing.T) {
 	servers := map[string]*httptest.Server{
 		"toloka": fakeTracker(t, nil, true),
-		"mazepa": fakeTracker(t, []release{{2, "Dune Part Two 2024 1080p x265", "12 GB"}}, false),
+		"mazepa": fakeTracker(t, []release{{2, "Dune Part Two 2024 1080p x265", "12 GB", ""}}, false),
 	}
 
 	store := queueOne(t, "Dune Part Two")
@@ -330,5 +353,51 @@ func TestCombineFailures(t *testing.T) {
 				t.Errorf("IsTransient = %v, want %v (err = %v)", got, testCase.wantTransient, err)
 			}
 		})
+	}
+}
+
+func TestMockbusterReleaseIsSkippedForLegitimate(t *testing.T) {
+	// Release 1 is 2160p (better quality) but produced by The Asylum (mockbuster).
+	// Release 2 is 1080p from Universal Pictures (legitimate).
+	servers := map[string]*httptest.Server{
+		"toloka": fakeTracker(t, []release{
+			{id: 1, title: "The Odyssey 2026 2160p", size: "20 GB", company: "The Asylum"},
+			{id: 2, title: "The Odyssey 2026 1080p", size: "8 GB", company: "Universal Pictures"},
+		}, false),
+	}
+	store := queueOne(t, "The Odyssey")
+	pool := testPool(t, store, servers, []string{"toloka"})
+
+	request := runOne(t, pool)
+
+	if request.Status != storage.StatusDownloaded {
+		t.Fatalf("status = %s, want DOWNLOADED", request.Status)
+	}
+	// The 1080p release should be selected because the 2160p one is from The Asylum
+	if request.ResultQuality != media.Quality1080 {
+		t.Errorf("selected quality = %q, want %q (The Asylum mockbuster should have been skipped)", request.ResultQuality, media.Quality1080)
+	}
+	if !strings.Contains(request.ResultTitle, "1080p") {
+		t.Errorf("selected title = %q, want 1080p release", request.ResultTitle)
+	}
+}
+
+func TestAllMockbustersResultsInNotFound(t *testing.T) {
+	// Only The Asylum release is found on the tracker.
+	servers := map[string]*httptest.Server{
+		"toloka": fakeTracker(t, []release{
+			{id: 1, title: "The Odyssey 2026 1080p", size: "5 GB", company: "The Asylum"},
+		}, false),
+	}
+	store := queueOne(t, "The Odyssey")
+	pool := testPool(t, store, servers, []string{"toloka"})
+
+	request := runOne(t, pool)
+
+	if request.Status != storage.StatusNotFound {
+		t.Fatalf("status = %s, want NOT_FOUND", request.Status)
+	}
+	if request.NextAttemptAt != nil {
+		t.Error("NOT_FOUND must not schedule a retry")
 	}
 }
